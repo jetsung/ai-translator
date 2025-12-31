@@ -1,0 +1,63 @@
+# AI 翻译工具配置文件示例
+
+# 根目录 - 包含需要翻译的 Markdown 文件
+root_dir = "./docs"
+
+# 输出目录 - 翻译后的文件保存位置
+output_dir = "./docs_zh"
+
+# 输出模式: "overwrite" (覆盖原文件) 或 "new_folder" (保存到新文件夹)
+output_mode = "new_folder"
+
+# 排除的目录 (逗号分隔)
+exclude_dir = "node_modules,.git,_build"
+
+# 最大 token 数
+max_tokens = 8192
+
+# 系统提示词（支持多行，使用 """ 包裹）
+system_prompt = """
+你是一个专业的技术文档翻译专家。请将以下英文 Markdown 文档翻译成流畅、自然的简体中文。
+
+严格要求：
+1. 保留完整的 Markdown 格式，包括标题、列表、表格、代码块、链接、图片等一切结构完全不变。
+2. 代码块、命令行、文件名、路径、API 名称、配置文件内容、技术术语等保持原样（不要翻译）。
+3. 专有名词（如产品名、框架名、软件名，例如 Traefik、Docker、Kubernetes）保持英文原名。
+4. 翻译要准确、专业、易懂，技术术语使用业界通用中文表达。
+5. 绝对禁止在文档开头或 YAML frontmatter 前后添加任何 Markdown 代码块标记（如 ```markdown 或 ```），保持文档结构的纯净。
+6. 绝对禁止自作主张地添加任何原文档中不存在的内容，包括但不限于：完整的语言指南、示例代码、学习资源、最佳实践等。只翻译原文档中已有的内容，不多不少。
+7. 只输出翻译后的完整 Markdown 内容，不要添加任何说明、注释或多余文本。
+8. 绝对禁止修改任何源文件路径或名称，包括但不限于图片（img, svg）、链接等，保持原样。
+"""
+
+# 日志配置
+[logging]
+# 日志等级 (debug, info, warn, error)
+level = "info"
+# 时间格式 (none (no timestamp), standard (local timezone format "%Y:%m:%d %H:%M:%S"), ISO-8601 (ISO 8601 format), RFC-3339 (RFC 3339 format))
+time_format = "standard"
+# 是否在终端界面显示日志
+console = true
+# 日志目录
+dir = "./logs"
+# 日志文件名
+file = "translation.log"
+
+# API Providers 配置
+[[providers]]
+enabled = false
+name = "OpenAI"
+api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxx"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4"
+concurrency = 3
+rate_delay = 3.0
+
+[[providers]]
+enabled = false
+name = "DeepSeek"
+api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxx"
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-chat"
+concurrency = 2
+rate_delay = 2.0
