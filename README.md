@@ -197,3 +197,7 @@ cargo fmt
 
 ## 许可证
 Apache License 2.0
+
+## 仓库镜像
+
+[MyCode](https://git.jetsung.com/jetsung/ai-translator) ● [Framagit](https://framagit.org/jetsung/ai-translator) ● [GitCode](https://gitcode.com/jetsung/ai-translator) ● [GitHub](https://github.com/jetsung/ai-translator)

@@ -1,0 +1,163 @@
+name: Build CLI on Release
+
+on:
+  push:
+    tags:
+      - 'ai-translator-v*'
+  # release:
+  #   types:
+  #     - created
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_DIR: dist
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-musl
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+          - arch: loongarch64
+            target: loongarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v6
+        with:
+            submodules: true
+      - name: Update Rust
+        run: |
+          rustup update
+          rustc --version
+      - uses: jetsung/setup-zig@v1
+        with:
+          version: "0.15.2"
+      - name: Check zig version
+        run: |
+          zig version
+      - name: Install target
+        run: rustup target add ${{ matrix.target }}
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y musl-tools musl-dev
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild
+      - name: Update submodules
+        run: git submodule update --init --recursive
+      - name: Build cli
+        run: cargo zigbuild -p ai-translator --release --target ${{ matrix.target }}
+      - name: Create release tarball
+        run: |
+          mkdir -p ${{ env.RELEASE_DIR }}
+          tar -cJf "${{ env.RELEASE_DIR }}/ai-translator-${{ github.event.release.tag_name || github.run_id }}-${{ matrix.arch }}-unknown-linux-musl.tar.xz" -C target/${{ matrix.target }}/release aitr
+      - name: Upload release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: ${{ env.RELEASE_DIR }}/*.tar.xz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: ai-translator-Linux-${{ matrix.arch }}
+          path: ${{ env.RELEASE_DIR }}/*
+
+  build-macos:
+    runs-on: macos-15
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-apple-darwin
+          - arch: aarch64
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v6
+        with:
+            submodules: true
+      - name: Update Rust
+        run: |
+          rustup update
+          rustc --version
+      - name: Install target
+        run: rustup target add ${{ matrix.target }}
+      - name: Update submodules
+        run: git submodule update --init --recursive
+      - name: Build cli
+        run: cargo build -p ai-translator --release --target ${{ matrix.target }}
+      - name: Create release tarball
+        run: |
+          mkdir -p ${{ env.RELEASE_DIR }}
+          tar -cJf "${{ env.RELEASE_DIR }}/ai-translator-${{ github.event.release.tag_name || github.run_id }}-${{ matrix.arch }}-apple-darwin.tar.xz" -C target/${{ matrix.target }}/release aitr
+      - name: Upload release assets
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: ${{ env.RELEASE_DIR }}/*.tar.xz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: ai-translator-macOS-${{ matrix.arch }}
+          path: ${{ env.RELEASE_DIR }}/*
+
+  build-windows:
+    runs-on: windows-2025
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-pc-windows-msvc
+          - arch: aarch64
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v6
+        with:
+            submodules: true
+      - name: Update Rust
+        run: |
+          rustup update
+          rustc --version
+      - name: Install zip utility
+        run: choco install zip -y
+        shell: powershell
+      - name: Install target
+        shell: bash
+        run: rustup target add ${{ matrix.target }}
+      - name: Update submodules
+        run: git submodule update --init --recursive
+      - name: Build cli
+        run: cargo build -p ai-translator --release --target ${{ matrix.target }}
+      - name: Create release zip file
+        shell: bash
+        run: |
+          mkdir -p "${{ env.RELEASE_DIR }}"
+          zip -j "${{ env.RELEASE_DIR }}/ai-translator-${{ github.event.release.tag_name || github.run_id }}-${{ matrix.arch }}-pc-windows-msvc.zip" target/${{ matrix.target }}/release/aitr.exe
+      - name: Upload release assets
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: ${{ env.RELEASE_DIR }}/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: ai-translator-Windows-${{ matrix.arch }}
+          path: ${{ env.RELEASE_DIR }}/*
