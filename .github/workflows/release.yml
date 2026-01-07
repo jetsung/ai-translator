@@ -3,7 +3,7 @@ name: Build CLI on Release
 on:
   push:
     tags:
-      - 'ai-translator-v*'
+      - 'v*'
   # release:
   #   types:
   #     - created
