@@ -3,7 +3,7 @@ name: Build CLI on Release
 on:
   push:
     tags:
-      - 'ai-translator-v*'
+      - 'v*'
   # release:
   #   types:
   #     - created
@@ -57,7 +57,7 @@ jobs:
       - name: Create release tarball
         run: |
           mkdir -p ${{ env.RELEASE_DIR }}
-          tar -cJf "${{ env.RELEASE_DIR }}/ai-translator-${{ github.event.release.tag_name || github.run_id }}-${{ matrix.arch }}-unknown-linux-musl.tar.xz" -C target/${{ matrix.target }}/release aitr
+          tar -cJf "${{ env.RELEASE_DIR }}/ai-translator-${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || github.run_id }}-${{ matrix.arch }}-unknown-linux-musl.tar.xz" -C target/${{ matrix.target }}/release aitr
       - name: Upload release assets
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -99,7 +99,7 @@ jobs:
       - name: Create release tarball
         run: |
           mkdir -p ${{ env.RELEASE_DIR }}
-          tar -cJf "${{ env.RELEASE_DIR }}/ai-translator-${{ github.event.release.tag_name || github.run_id }}-${{ matrix.arch }}-apple-darwin.tar.xz" -C target/${{ matrix.target }}/release aitr
+          tar -cJf "${{ env.RELEASE_DIR }}/ai-translator-${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || github.run_id }}-${{ matrix.arch }}-apple-darwin.tar.xz" -C target/${{ matrix.target }}/release aitr
       - name: Upload release assets
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: softprops/action-gh-release@v2
@@ -146,7 +146,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "${{ env.RELEASE_DIR }}"
-          zip -j "${{ env.RELEASE_DIR }}/ai-translator-${{ github.event.release.tag_name || github.run_id }}-${{ matrix.arch }}-pc-windows-msvc.zip" target/${{ matrix.target }}/release/aitr.exe
+          zip -j "${{ env.RELEASE_DIR }}/ai-translator-${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || github.run_id }}-${{ matrix.arch }}-pc-windows-msvc.zip" target/${{ matrix.target }}/release/aitr.exe
       - name: Upload release assets
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: softprops/action-gh-release@v2
