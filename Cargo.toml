@@ -3,6 +3,14 @@ name = "ai-translator"
 version = "0.1.1"
 edition = "2024"
 
+description = "基于 AI 的多语言文本翻译工具，支持自定义提示词"
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/jetsung/ai-translator"
+homepage = "https://github.com/jetsung/ai-translator"
+keywords = ["translator", "translation", "ai", "language", "nlp"]
+categories = ["text-processing", "internationalization"]
+
 [[bin]]
 name = "aitr"
 path = "src/main.rs"
