@@ -1,15 +1,13 @@
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
-use yaml_rust::Yaml as YamlValue;
 
-use crate::config::{OutputMode, PRESERVE_FIELDS};
+use crate::config::OutputMode;
 use crate::recorder::TranslationRecorder;
 
 /// OpenAI API 请求体
@@ -52,6 +50,7 @@ pub struct Provider {
     pub model: String,
     pub rate_delay: Duration,
     pub client: Client,
+    pub concurrency: usize,
 }
 
 impl Provider {
@@ -63,6 +62,7 @@ impl Provider {
             model: config.model.clone(),
             rate_delay: Duration::from_secs_f64(config.rate_delay),
             client: Client::new(),
+            concurrency: config.concurrency.max(1),
         }
     }
 
@@ -100,6 +100,40 @@ impl Provider {
 
     /// 翻译文本
     pub async fn translate(
+        &self,
+        content: &str,
+        system_prompt: &str,
+        max_tokens: usize,
+        max_chunk_size: usize,
+        file_identifier: &str,
+    ) -> Result<String> {
+        // 如果内容超过限制，进行拆分翻译
+        if content.len() > max_chunk_size {
+            info!("[{}] 文件内容过长 ({} chars): {}，将拆分翻译 (阈值: {})", self.name, content.len(), file_identifier, max_chunk_size);
+            let chunks = split_markdown(content, max_chunk_size);
+            let mut translated_parts = Vec::new();
+            
+            for (i, chunk) in chunks.iter().enumerate() {
+                debug!("[{}] 正在翻译第 {}/{} 段 ({} chars) - {}", self.name, i + 1, chunks.len(), chunk.len(), file_identifier);
+                // 递归调用（针对单段内容）或直接调用 API
+                // 这里直接调用 API 逻辑，避免递归导致的死循环（虽然有长度检查）
+                let part_result = self.translate_single_chunk(chunk, system_prompt, max_tokens).await?;
+                translated_parts.push(part_result);
+                
+                // 简单的防速率限制延迟
+                if i < chunks.len() - 1 {
+                    sleep(Duration::from_millis(500)).await;
+                }
+            }
+            
+            return Ok(translated_parts.join("\n\n"));
+        }
+
+        self.translate_single_chunk(content, system_prompt, max_tokens).await
+    }
+
+    /// 翻译单个文本块
+    async fn translate_single_chunk(
         &self,
         content: &str,
         system_prompt: &str,
@@ -150,6 +184,51 @@ impl Provider {
     }
 }
 
+/// 简单的 Markdown 拆分函数
+fn split_markdown(content: &str, max_chunk_size: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current_chunk = String::new();
+    
+    // 优先按段落拆分
+    for paragraph in content.split("\n\n") {
+        if current_chunk.len() + paragraph.len() + 2 > max_chunk_size {
+            if !current_chunk.is_empty() {
+                chunks.push(current_chunk);
+                current_chunk = String::new();
+            }
+            
+            // 如果单个段落本身就很大，强制按行拆分
+            if paragraph.len() > max_chunk_size {
+                 for line in paragraph.lines() {
+                     if current_chunk.len() + line.len() + 1 > max_chunk_size {
+                         if !current_chunk.is_empty() {
+                             chunks.push(current_chunk);
+                             current_chunk = String::new();
+                         }
+                     }
+                     if !current_chunk.is_empty() {
+                        current_chunk.push('\n');
+                     }
+                     current_chunk.push_str(line);
+                 }
+            } else {
+                current_chunk.push_str(paragraph);
+            }
+        } else {
+            if !current_chunk.is_empty() {
+                current_chunk.push_str("\n\n");
+            }
+            current_chunk.push_str(paragraph);
+        }
+    }
+    
+    if !current_chunk.is_empty() {
+        chunks.push(current_chunk);
+    }
+    
+    chunks
+}
+
 /// 检查内容是否可能是中文
 pub fn is_likely_chinese(content: &str) -> bool {
     let chinese_chars = content
@@ -157,55 +236,6 @@ pub fn is_likely_chinese(content: &str) -> bool {
         .filter(|c| ('\u{4e00}'..='\u{9fff}').contains(c))
         .count();
     chinese_chars > 10 // Lower threshold for test purposes
-}
-
-/// 解析 frontmatter 和正文
-pub fn parse_frontmatter(content: &str) -> Option<(YamlValue, String)> {
-    if !content.starts_with("---") {
-        return None;
-    }
-
-    let parts: Vec<&str> = content.splitn(3, "---").collect();
-    if parts.len() != 3 {
-        return None;
-    }
-
-    let frontmatter_str = parts[1].trim();
-    let body = parts[2].trim();
-
-    match yaml_rust::YamlLoader::load_from_str(frontmatter_str) {
-        Ok(mut docs) => {
-            if !docs.is_empty() {
-                let frontmatter = docs.remove(0);
-                Some((frontmatter, body.to_string()))
-            } else {
-                None
-            }
-        }
-        Err(_) => None,
-    }
-}
-
-/// 从英文文件加载需要保留的字段
-pub fn load_preserved_fields(english_path: &Path) -> Result<HashMap<String, YamlValue>> {
-    let mut preserved = HashMap::new();
-
-    if !english_path.exists() {
-        return Ok(preserved);
-    }
-
-    let content = fs::read_to_string(english_path)
-        .with_context(|| format!("无法读取英文文件: {:?}", english_path))?;
-
-    if let Some((YamlValue::Hash(mapping), _)) = parse_frontmatter(&content) {
-        for field in PRESERVE_FIELDS {
-            if let Some(key) = mapping.get(&YamlValue::String(field.to_string())) {
-                preserved.insert(field.to_string(), key.clone());
-            }
-        }
-    }
-
-    Ok(preserved)
 }
 
 /// 翻译单个文件
@@ -218,6 +248,7 @@ pub async fn translate_file(
     provider: &Provider,
     system_prompt: &str,
     max_tokens: usize,
+    max_chunk_size: usize,
     recorder: &TranslationRecorder,
     force_translate: bool,
 ) -> Result<()> {
@@ -306,53 +337,66 @@ pub async fn translate_file(
         return Ok(());
     }
 
+    // 检查是否为 txt 文件且像是文件列表
+    if let Some(ext) = abs_path.extension() {
+        if ext == "txt" {
+            // Check first 5 lines with 80% threshold (4/5 lines must be paths)
+            if crate::files::is_file_list(&abs_path, 5, 0.8).unwrap_or(false) {
+                 info!("[{}] 跳过翻译 (检测到文件列表): {:?}", provider.name, rel_path);
+                 
+                 // 确定保存路径
+                 let save_path = match output_mode {
+                    OutputMode::Overwrite => abs_path.clone(),
+                    OutputMode::NewFolder => {
+                        // 检查输出目录是否存在
+                        if !output_dir.exists() {
+                            // This check is redundant as it's done before calling translate_file usually, 
+                            // but good for safety.
+                            // However, let's stick to the pattern below.
+                        }
+
+                        let rel_dir = effective_rel_path.parent().unwrap_or(Path::new(""));
+                        let save_dir: PathBuf = if rel_dir.as_os_str().is_empty() {
+                            output_dir.to_path_buf()
+                        } else {
+                            output_dir.join(rel_dir)
+                        };
+                        // 只创建子目录
+                        if !save_dir.exists() {
+                            fs::create_dir_all(&save_dir)
+                                .with_context(|| format!("无法创建子目录: {:?}", save_dir))?;
+                        }
+                        save_dir.join(effective_rel_path.file_name().unwrap())
+                    }
+                };
+                
+                // 直接复制文件
+                fs::copy(&abs_path, &save_path)
+                    .with_context(|| format!("无法复制文件: {:?} -> {:?}", abs_path, save_path))?;
+                    
+                recorder.record_success(&abs_path)?;
+                return Ok(());
+            }
+        }
+    }
+
     // 读取文件内容
     let content =
         fs::read_to_string(&abs_path).with_context(|| format!("无法读取文件: {:?}", abs_path))?;
 
-    // 解析 frontmatter 和正文
-    let (original_frontmatter, original_body) = match parse_frontmatter(&content) {
-        Some((fm, body)) => (Some(fm), body),
-        None => (None, content.clone()),
-    };
-
     // 检查是否已经是中文
-    if !force_translate && is_likely_chinese(&original_body) {
+    if !force_translate && is_likely_chinese(&content) {
         info!("[{}] 跳过 (已是中文): {:?}", provider.name, rel_path);
         recorder.record_success(&abs_path)?;
         return Ok(());
     }
 
-    // 获取对应的英文文件路径
-    let english_abs_path = root_dir.join(rel_path.to_string_lossy().replacen("docs_zh", "docs", 1));
-
-    // 加载需要保留的字段
-    let preserved_fields = load_preserved_fields(&english_abs_path)?;
-
-    // 准备发送给 LLM 的内容
-    let content_for_llm = if let Some(frontmatter) = &original_frontmatter {
-        // 移除需要保留的字段
-        let mut frontmatter_for_llm = frontmatter.clone();
-        if let YamlValue::Hash(ref mut mapping) = frontmatter_for_llm {
-            for field in PRESERVE_FIELDS {
-                mapping.remove(&YamlValue::String(field.to_string()));
-            }
-        }
-
-        let mut frontmatter_str = String::new();
-        let mut emitter = yaml_rust::YamlEmitter::new(&mut frontmatter_str);
-        emitter.dump(&frontmatter_for_llm).unwrap_or(());
-
-        format!("---\n{}---\n{}", frontmatter_str, original_body)
-    } else {
-        content.clone()
-    };
-
     // 调用翻译 API，最多重试 3 次
     let mut translated_text = None;
+    let file_identifier = file_path.to_string_lossy();
     for retry in 0..3 {
         match provider
-            .translate(&content_for_llm, system_prompt, max_tokens)
+            .translate(&content, system_prompt, max_tokens, max_chunk_size, &file_identifier)
             .await
         {
             Ok(text) => {
@@ -376,18 +420,6 @@ pub async fn translate_file(
 
     let translated_text =
         translated_text.ok_or_else(|| anyhow!("[{}] 翻译失败: {:?}", provider.name, rel_path))?;
-
-    // 处理翻译结果，合并保留的字段
-    let final_content = if let Some(original_fm) = &original_frontmatter {
-        recombine_frontmatter(
-            &translated_text,
-            original_fm,
-            &preserved_fields,
-            &rel_path,
-        )?
-    } else {
-        translated_text
-    };
 
     // 确定保存路径
     let save_path = match output_mode {
@@ -420,7 +452,7 @@ pub async fn translate_file(
 
     // 写入文件
     debug!("保存路径: {:?}", save_path);
-    fs::write(&save_path, &final_content)
+    fs::write(&save_path, &translated_text)
         .with_context(|| format!("无法写入文件: {:?}", save_path))?;
 
     info!(
@@ -432,68 +464,10 @@ pub async fn translate_file(
     Ok(())
 }
 
-/// 重新组合 frontmatter 和正文
-fn recombine_frontmatter(
-    translated_text: &str,
-    original_frontmatter: &YamlValue,
-    preserved_fields: &HashMap<String, YamlValue>,
-    rel_path: &Path,
-) -> Result<String> {
-    let mut final_frontmatter = original_frontmatter.clone();
-
-    // 尝试从 LLM 响应中解析 frontmatter
-    if translated_text.starts_with("---") {
-        let parts: Vec<&str> = translated_text.splitn(3, "---").collect();
-        if parts.len() == 3 && let Ok(mut docs) = yaml_rust::YamlLoader::load_from_str(parts[1].trim()) {
-            if !docs.is_empty() {
-                    let llm_frontmatter = docs.remove(0);
-                    // 合并 LLM 翻译的字段
-                    if let (yaml_rust::Yaml::Hash(final_map), yaml_rust::Yaml::Hash(llm_map)) =
-                        (&mut final_frontmatter, llm_frontmatter)
-                    {
-                        for (key, value) in llm_map {
-                            final_map.insert(key, value);
-                        }
-                    }
-                }
-
-                let translated_body = parts[2].trim();
-
-                // 插入保留的字段
-                if let YamlValue::Hash(ref mut final_map) = final_frontmatter {
-                    for (field, value) in preserved_fields {
-                        final_map.insert(YamlValue::String(field.clone()), value.clone());
-                    }
-                }
-
-                // 调试输出
-                if rel_path.starts_with("docs_zh/tags/") {
-                    debug!("--- DEBUG: English Frontmatter for {:?} ---", rel_path);
-                    debug!("{:?}", original_frontmatter);
-                    debug!("--- DEBUG: Preserved Data for {:?} ---", rel_path);
-                    debug!("{:?}", preserved_fields);
-                    debug!("--- DEBUG: Final Frontmatter Dict for {:?} ---", rel_path);
-                    debug!("{:?}", final_frontmatter);
-                }
-
-            let mut frontmatter_str = String::new();
-            let mut emitter = yaml_rust::YamlEmitter::new(&mut frontmatter_str);
-            emitter.dump(&final_frontmatter).unwrap_or(());
-
-            return Ok(format!("---\n{}---\n{}", frontmatter_str, translated_body));
-        }
-    }
-
-    // 如果无法解析，直接返回翻译文本
-    Ok(translated_text.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::ProviderConfig;
-    use std::fs;
-    use tempfile::TempDir;
 
     #[test]
     fn test_is_likely_chinese() {
@@ -508,68 +482,6 @@ mod tests {
         // Test mixed content with few Chinese characters (should return false)
         let mixed_content = "This content has few 中文 characters.";
         assert!(!is_likely_chinese(mixed_content));
-    }
-
-    #[test]
-    fn test_parse_frontmatter() {
-        let content_with_frontmatter = r###"---
-title: \"Test Title\"
-description: \"Test Description\"
-tags: [\"test\", \"example\"]
----
-# Test Document
-
-This is the body of the document.
-"###;
-
-        let result = parse_frontmatter(content_with_frontmatter);
-        assert!(result.is_some());
-
-        let (frontmatter, body) = result.unwrap();
-        assert_eq!(
-            body.trim(),
-            "# Test Document\n\nThis is the body of the document."
-        );
-
-        // Check that frontmatter contains expected values
-        if let YamlValue::Hash(mapping) = frontmatter {
-            let title_key = YamlValue::String("title".to_string());
-            let description_key = YamlValue::String("description".to_string());
-            let tags_key = YamlValue::String("tags".to_string());
-
-            assert!(mapping.contains_key(&title_key));
-            assert!(mapping.contains_key(&description_key));
-            assert!(mapping.contains_key(&tags_key));
-        }
-
-        // Test content without frontmatter
-        let content_without_frontmatter = "This is just a plain document without frontmatter.";
-        let result = parse_frontmatter(content_without_frontmatter);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_load_preserved_fields() {
-        let temp_dir = TempDir::new().unwrap();
-        let test_file = temp_dir.path().join("test.md");
-
-        let test_content = r###"---
-tags: [\"original\", \"tags\"]
-keywords: [\"original\", \"keywords\"]
-custom_field: \"This should be translated\"
----
-# Test Document
-"###;
-
-        fs::write(&test_file, test_content).unwrap();
-
-        let preserved_fields = load_preserved_fields(&test_file).unwrap();
-
-        // Check that preserved fields are loaded
-        assert!(preserved_fields.contains_key("tags"));
-        assert!(preserved_fields.contains_key("keywords"));
-        // custom_field should not be preserved as it's not in PRESERVE_FIELDS
-        assert!(!preserved_fields.contains_key("custom_field"));
     }
 
     #[tokio::test]
@@ -671,6 +583,7 @@ custom_field: \"This should be translated\"
                 model: "gpt-4".to_string(),
                 rate_delay: Duration::from_secs_f64(3.0),
                 client,
+                concurrency: 3,
             };
 
             let result = provider.test().await;
@@ -709,10 +622,11 @@ custom_field: \"This should be translated\"
                 model: "gpt-4".to_string(),
                 rate_delay: Duration::from_secs_f64(3.0),
                 client,
+                concurrency: 3,
             };
 
             let result = provider
-                .translate("Hello world", "You are a translator", 1000)
+                .translate("Hello world", "You are a translator", 1000, 4000, "test")
                 .await;
 
             // The translation should succeed and return the expected content
@@ -746,10 +660,11 @@ custom_field: \"This should be translated\"
                 model: "gpt-4".to_string(),
                 rate_delay: Duration::from_secs_f64(3.0),
                 client,
+                concurrency: 3,
             };
 
             let result = provider
-                .translate("Hello world", "You are a translator", 1000)
+                .translate("Hello world", "You are a translator", 1000, 4000, "test")
                 .await;
 
             // The translation should fail due to the 401 error

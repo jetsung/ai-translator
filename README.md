@@ -1,18 +1,18 @@
 # AI Translator
 
-基于 Rust 的 AI 文档翻译工具，将 Markdown 文档翻译成简体中文。支持 OpenAI 兼容接口，支持多 Provider 并发，支持本地文件、本地目录及远程 URL 翻译。
+基于 Rust 开发的高性能 AI 文档翻译工具，旨在将技术文档（特别是 Markdown）精准地翻译成流畅的简体中文。
 
-## 功能特性
+## 🌟 核心特性
 
-- 🚀 高性能异步翻译，支持多 Provider 并发及速率限制
-- 🌐 支持远程 URL 翻译及本地文件/目录批量翻译
-- 📋 支持从文件列表（List Mode）批量处理多个文件或 URL
-- 📝 智能处理 Markdown 格式，保留 YAML frontmatter 及特定技术术语
-- 🔄 支持断点续传，记录已翻译和失败的文件，支持重试失败任务
-- ⚙️ 灵活的配置文件支持，支持命令行参数覆盖
-- 📊 详细的日志记录，支持自定义时间格式及控制台输出
+- **🚀 工业级并发性能**：支持多 Provider（OpenAI, Claude, DeepSeek 等）并发翻译，支持抢占式任务分发。
+- **🧠 智能模式识别**：自动检测 `.txt` 文件内容。若前 20 行中 80% 为有效路径或 URL，自动切换为**列表模式**。
+- **✂️ 大文件智能拆分**：支持 `max_chunk_size` 配置（默认 4000 字符），自动按段落和行拆分超长文档，完美解决模型上下文限制。
+- **🛡️ 列表保护机制**：在目录翻译时自动识别 `.txt` 列表文件并进行原样复制，防止误翻译导致的清单损坏。
+- **🌐 全场景支持**：完美支持本地单文件、目录递归、文本列表清单以及远程 URL 直接下载并翻译。
+- **🔄 断点续传与去重**：实时记录翻译状态，支持重试失败任务，智能检测内容是否已为中文以避免重复翻译。
+- **🛠️ 高度可定制**：灵活的配置文件支持，命令行参数可全覆盖。
 
-## 安装
+## 📦 安装
 
 ### 从源码编译
 
@@ -20,180 +20,111 @@
 cargo build --release
 ```
 
-编译后的二进制文件位于 `target/release/ai-translator`
+编译后的二进制文件位于 `target/release/aitr`。
 
-### Cargo 方式
+### 使用 Cargo 安装
 ```bash
-cargo install --git https://git.jetsung.com/jetsung/ai-translator.git --locked
+cargo install --git https://github.com/jetsung/ai-translator.git --locked
 ```
 
-## 配置
+## ⚙️ 快速开始
 
-你可以使用 `--init` 命令生成默认配置文件：
-
-```bash
-./ai-translator --init
-```
-
-或者复制示例配置文件并根据需要修改：
+### 1. 初始化配置文件
 
 ```bash
-cp config.toml.example config.toml
+aitr --init
+```
+这将在当前目录生成 `config.toml`。请在其中填入您的 API Key 和 Provider 信息。
+
+### 2. 翻译单文件或 URL
+
+```bash
+# 本地文件
+aitr --input path/to/readme.md
+
+# 远程 URL
+aitr --input https://example.com/docs/guide.md --output ./zh_docs/
 ```
 
-配置文件说明：
+### 3. 目录批量翻译
+
+```bash
+aitr --input ./en_docs --output ./zh_docs
+```
+
+### 4. 列表清单模式
+
+创建一个 `list.txt`，每行一个路径或 URL，然后运行：
+
+```bash
+aitr --list --input list.txt --output ./translated
+```
+*注：即使不带 `--list`，程序检测到内容为列表时也会自动切换模式。*
+
+## 🛠️ 高级用法
+
+### 覆盖拆分阈值
+针对极长文档，可以手动调整分块大小：
+```bash
+aitr --input long_doc.md --max-chunk-size 8000
+```
+
+### 指定特定提供商并保留并发
+```bash
+# 使用名为 "DeepSeek" 的 Provider 翻译，并使用该 Provider 配置的并发数
+aitr --input ./docs --provider-name DeepSeek
+```
+
+### 重试失败任务
+```bash
+aitr --retry-failed
+```
+
+## 📖 配置文件说明 (`config.toml`)
 
 ```toml
-# 根目录 - 包含需要翻译的 Markdown 文件 (批量模式下使用)
+# 基础配置
 root_dir = "./docs"
-
-# 输出目录 - 翻译后的文件保存位置
 output_dir = "./docs_zh"
-
-# 输出模式: "overwrite" (覆盖原文件) 或 "new_folder" (保存到新文件夹，保持目录结构)
-output_mode = "new_folder"
-
-# 排除的目录 (逗号分隔)
-exclude_dir = "node_modules,.git,_build"
-
-# 最大 token 数
+output_mode = "new_folder"    # overwrite 或 new_folder
 max_tokens = 8192
+max_chunk_size = 4000         # 大文件拆分字符阈值
+exclude_dir = ".git,node_modules"
 
-# 系统提示词（支持多行，使用 """ 包裹）
-system_prompt = """
-你是一个专业的技术文档翻译专家。请将以下英文 Markdown 文档翻译成流畅、自然的简体中文。
-...
-"""
-
-# 日志配置
-[logging]
-# 日志等级 (debug, info, warn, error)
-level = "info"
-# 时间格式 (none, standard, ISO-8601, RFC-3339)
-time_format = "standard"
-# 是否在终端界面显示日志
-console = true
-# 日志目录
-dir = "./logs"
-# 日志文件名
-file = "translation.log"
-
-# API Providers 配置 (可以配置多个)
+# Provider 配置 (支持多个)
 [[providers]]
-enabled = true
 name = "OpenAI"
-api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxx"
+enabled = true
+api_key = "sk-..."
 base_url = "https://api.openai.com/v1"
 model = "gpt-4"
-concurrency = 3
-rate_delay = 3.0
+concurrency = 3               # 并发任务数
+rate_delay = 1.0              # 请求间隔延迟 (秒)
 ```
 
-## 使用方法
-
-### 初始化配置文件
-
-```bash
-./ai-translator --init
-```
-
-### 翻译单个文件或 URL
-
-```bash
-# 翻译本地文件
-./ai-translator --input path/to/file.md
-
-# 翻译远程 URL
-./ai-translator --input https://raw.githubusercontent.com/user/repo/main/README.md --output ./downloads/README_zh.md
-```
-
-### 翻译单个文件并指定输出路径
-
-```bash
-# 指定输出文件路径
-./ai-translator --input path/to/input.md --output path/to/output.md
-
-# 指定输出目录（使用输入文件名）
-./ai-translator --input path/to/input.md --output output_directory
-```
-
-### 批量翻译 (目录模式)
-
-```bash
-# 使用配置文件中的 root_dir 进行翻译
-./ai-translator
-
-# 指定输入目录和输出目录
-./ai-translator --input ./my_docs --output ./my_docs_zh
-```
-
-### 文件列表模式 (List Mode)
-
-从一个文本文件中读取多个文件路径或 URL 进行翻译（每行一个）：
-
-```bash
-./ai-translator --list --input list.txt --output ./translated_files
-```
-
-### 常用参数组合
-
-```bash
-# 强制重新翻译
-./ai-translator --force
-
-# 重试失败的文件
-./ai-translator --retry-failed
-
-# 覆盖配置文件中的输出模式
-./ai-translator --output-mode overwrite
-
-# 跳过 Provider 可用性检查
-./ai-translator --no-provider-check
-```
-
-## 命令行参数
+## 命令行参数一览
 
 | 参数 | 说明 |
 |------|------|
 | `--init` | 初始化配置文件 |
-| `--input` | 输入文件路径、目录或 URL |
-| `--output` | 输出路径（文件或目录） |
-| `--list` | 启用文件列表模式，`--input` 为列表文件路径 |
-| `--config`, `-c` | 配置文件路径（默认：config.toml） |
-| `--force` | 强制重新翻译已翻译的文件 |
+| `--input` | 输入路径（文件/目录/URL） |
+| `--output` | 输出路径 |
+| `--list` | 启用列表模式 |
+| `--max-chunk-size` | 覆盖大文件拆分阈值 |
+| `--max-tokens` | 覆盖单次请求最大 Token |
+| `--provider-name` | 指定使用的 Provider 名称 |
+| `--force` | 强制重新翻译 |
 | `--retry-failed` | 仅重试之前失败的文件 |
-| `--no-provider-check` | 跳过启动时的 API Provider 可用性检查 |
-| `--output-mode` | 覆盖输出模式 (`overwrite` 或 `new_folder`) |
-| `--max-tokens` | 覆盖最大 Token 数 |
-| `--exclude-dir` | 覆盖排除的目录（逗号分隔） |
+| `--full-path` | 保留完整目录结构 |
 
-## 翻译规则
+## 🛠️ 开发
 
-1. **格式保留**：保留完整的 Markdown 格式（标题、列表、表格、链接、图片等）。
-2. **术语保护**：代码块、命令行、文件名、路径、API 名称、技术术语保持原样。
-3. **专有名词**：产品名、框架名（如 Traefik, Kubernetes）保持英文。
-4. **智能过滤**：自动识别 YAML frontmatter，保留 tags、keywords、aliases 等字段。
-5. **增量翻译**：默认跳过已翻译成功的本地文件。
+项目提供了 `Makefile` 以简化开发流程：
 
-## 开发
-
-### 运行测试
-
-```bash
-cargo test
-```
-
-### 检查代码
-
-```bash
-cargo check
-```
-
-### 格式化代码
-
-```bash
-cargo fmt
-```
+- `make test`: 运行所有单元测试。
+- `make lint`: 运行代码风格检查。
+- `make run-examples`: 顺序运行包含大文件、列表、URL 的全场景示例。
+- `make clean`: 清理日志、翻译记录及示例输出。
 
 ## 许可证
 Apache License 2.0

@@ -62,9 +62,25 @@ struct Args {
     #[arg(long)]
     max_tokens: Option<usize>,
 
+    /// 覆盖大文件拆分阈值 (字符数，默认 4000)
+    #[arg(long)]
+    max_chunk_size: Option<usize>,
+
     /// 覆盖排除的目录 (逗号分隔)
     #[arg(long)]
     exclude_dir: Option<String>,
+
+    /// 在单文件翻译时保留完整路径结构（仅对 --input 指定的单个文件有效）
+    #[arg(long)]
+    full_path: bool,
+
+    /// 指定使用的 Provider 索引 (0-based) - 与 --provider-name 互斥。默认随机选择。使用此参数时会自动跳过 Provider 可用性检测。
+    #[arg(long, conflicts_with = "provider_name")]
+    provider: Option<usize>,
+
+    /// 指定使用的 Provider 名称（精确匹配）- 与 --provider 互斥。默认随机选择。使用此参数时会自动跳过 Provider 可用性检测。
+    #[arg(long, conflicts_with = "provider")]
+    provider_name: Option<String>,
 }
 
 #[cfg(test)]
@@ -246,6 +262,376 @@ mod tests {
             "Local files should not be detected as URLs"
         );
     }
+
+    #[tokio::test]
+    async fn test_full_path_output_calculation() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Test case 1: File in subdirectory with --full-path enabled
+        // openspec/AGENTS.md -> tmp/ should become tmp/openspec/AGENTS.md
+        let input_path = temp_dir.path().join("openspec").join("AGENTS.md");
+        let output_dir = temp_dir.path().join("tmp");
+
+        // Create the input directory and file
+        fs::create_dir_all(input_path.parent().unwrap()).unwrap();
+        fs::write(&input_path, "# Test Content").unwrap();
+
+        // Read input file to verify it exists
+        assert!(input_path.exists());
+
+        // Test with full_path = true (preserve directory structure)
+        let full_path = true;
+        let output_file_path = if output_dir.extension().is_none() && !output_dir.is_file() {
+            if full_path {
+                // Simulate strip_prefix behavior
+                let input_relative_path = input_path
+                    .strip_prefix(temp_dir.path())
+                    .unwrap_or_else(|_| input_path.as_path());
+                output_dir.join(input_relative_path)
+            } else {
+                output_dir.join(input_path.file_name().unwrap())
+            }
+        } else {
+            output_dir.clone()
+        };
+
+        let expected = temp_dir.path().join("tmp").join("openspec").join("AGENTS.md");
+        assert_eq!(output_file_path, expected, "With --full-path, should preserve directory structure");
+
+        // Test with full_path = false (default - filename only)
+        let full_path = false;
+        let output_file_path = if output_dir.extension().is_none() && !output_dir.is_file() {
+            if full_path {
+                let input_relative_path = input_path
+                    .strip_prefix(temp_dir.path())
+                    .unwrap_or_else(|_| input_path.as_path());
+                output_dir.join(input_relative_path)
+            } else {
+                output_dir.join(input_path.file_name().unwrap())
+            }
+        } else {
+            output_dir.clone()
+        };
+
+        let expected = temp_dir.path().join("tmp").join("AGENTS.md");
+        assert_eq!(
+            output_file_path,
+            expected,
+            "Without --full-path, should only use filename"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_full_path_nested_directories() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Test deeply nested file: docs/guide/getting-started.md
+        let input_path = temp_dir
+            .path()
+            .join("docs")
+            .join("guide")
+            .join("getting-started.md");
+        let output_dir = temp_dir.path().join("translated");
+
+        // Create the nested directory structure
+        fs::create_dir_all(input_path.parent().unwrap()).unwrap();
+        fs::write(&input_path, "# Nested Content").unwrap();
+
+        assert!(input_path.exists());
+
+        // With --full-path: should create translated/docs/guide/getting-started.md
+        let full_path = true;
+        let output_file_path = if output_dir.extension().is_none() && !output_dir.is_file() {
+            if full_path {
+                // Simulate strip_prefix behavior
+                let input_relative_path = input_path
+                    .strip_prefix(temp_dir.path())
+                    .unwrap_or_else(|_| input_path.as_path());
+                output_dir.join(input_relative_path)
+            } else {
+                output_dir.join(input_path.file_name().unwrap())
+            }
+        } else {
+            output_dir.clone()
+        };
+
+        let expected = temp_dir
+            .path()
+            .join("translated")
+            .join("docs")
+            .join("guide")
+            .join("getting-started.md");
+        assert_eq!(
+            output_file_path,
+            expected,
+            "With --full-path, should preserve full nested structure"
+        );
+
+        // Without --full-path: should only create translated/getting-started.md
+        let full_path = false;
+        let output_file_path = if output_dir.extension().is_none() && !output_dir.is_file() {
+            if full_path {
+                let input_relative_path = input_path
+                    .strip_prefix(temp_dir.path())
+                    .unwrap_or_else(|_| input_path.as_path());
+                output_dir.join(input_relative_path)
+            } else {
+                output_dir.join(input_path.file_name().unwrap())
+            }
+        } else {
+            output_dir.clone()
+        };
+
+        let expected = temp_dir.path().join("translated").join("getting-started.md");
+        assert_eq!(
+            output_file_path,
+            expected,
+            "Without --full-path, should only use filename"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_full_path_file_in_root_directory() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Test file in root directory: README.md
+        let input_path = temp_dir.path().join("README.md");
+        let output_dir = temp_dir.path().join("tmp");
+
+        fs::write(&input_path, "# Root Content").unwrap();
+        assert!(input_path.exists());
+
+        // Since README.md is in root of temp_dir, strip_prefix gives just "README.md"
+        let full_path = true;
+        let output_file_path = if output_dir.extension().is_none() && !output_dir.is_file() {
+            if full_path {
+                // Simulate strip_prefix behavior
+                let input_relative_path = input_path
+                    .strip_prefix(temp_dir.path())
+                    .unwrap_or_else(|_| input_path.as_path());
+                output_dir.join(input_relative_path)
+            } else {
+                output_dir.join(input_path.file_name().unwrap())
+            }
+        } else {
+            output_dir.clone()
+        };
+
+        let expected = temp_dir.path().join("tmp").join("README.md");
+        assert_eq!(
+            output_file_path,
+            expected,
+            "Root directory file with --full-path should create output in tmp/README.md"
+        );
+    }
+
+
+    #[tokio::test]
+    async fn test_full_path_with_explicit_output_file() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Test --input openspec/AGENTS.md --output tmp/custom.md --full-path
+        // The output is explicitly a file, so --full-path should be ignored
+        let input_path = temp_dir.path().join("openspec").join("AGENTS.md");
+        let output_path = temp_dir.path().join("tmp").join("custom.md");
+
+        fs::create_dir_all(input_path.parent().unwrap()).unwrap();
+        fs::write(&input_path, "# Test Content").unwrap();
+        fs::create_dir_all(output_path.parent().unwrap()).unwrap();
+
+        assert!(input_path.exists());
+
+        // When output has an extension, it's treated as a file, not a directory
+        let full_path = true;
+        let output_file_path = if output_path.extension().is_none() && !output_path.is_file() {
+            if full_path {
+                if let Some(parent) = input_path.parent() {
+                    output_path.join(parent).join(input_path.file_name().unwrap())
+                } else {
+                    output_path.join(input_path.file_name().unwrap())
+                }
+            } else {
+                output_path.join(input_path.file_name().unwrap())
+            }
+        } else {
+            // Output is a file, use it directly (ignore --full-path)
+            output_path.clone()
+        };
+
+        let expected = temp_dir.path().join("tmp").join("custom.md");
+        assert_eq!(
+            output_file_path,
+            expected,
+            "Explicit output filename should be used, --full-path should be ignored"
+        );
+    }
+
+    #[test]
+    fn test_select_provider_by_name_valid() {
+        use translator::Provider;
+        use reqwest::Client;
+
+        let client = Client::builder().no_proxy().build().unwrap();
+        let providers = vec![
+            Provider {
+                name: "OpenAI".to_string(),
+                api_key: "sk-test".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                model: "gpt-4".to_string(),
+                rate_delay: std::time::Duration::from_secs_f64(3.0),
+                client,
+                concurrency: 3,
+            },
+        ];
+
+        let result = select_provider(&providers, None, Some("OpenAI"));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name, "OpenAI");
+    }
+
+    #[test]
+    fn test_select_provider_by_name_invalid() {
+        use translator::Provider;
+        use reqwest::Client;
+
+        let client = Client::builder().no_proxy().build().unwrap();
+        let providers = vec![Provider {
+            name: "OpenAI".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4".to_string(),
+            rate_delay: std::time::Duration::from_secs_f64(3.0),
+            client,
+            concurrency: 3,
+        }];
+
+        let result = select_provider(&providers, None, Some("NonExistent"));
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("未找到"));
+        assert!(error_msg.contains("NonExistent"));
+        assert!(error_msg.contains("OpenAI"));
+    }
+
+    #[test]
+    fn test_select_provider_by_index_valid() {
+        use translator::Provider;
+        use reqwest::Client;
+
+        let client = Client::builder().no_proxy().build().unwrap();
+        let providers = vec![
+            Provider {
+                name: "OpenAI".to_string(),
+                api_key: "sk-test".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                model: "gpt-4".to_string(),
+                rate_delay: std::time::Duration::from_secs_f64(3.0),
+                client: client.clone(),
+                concurrency: 3,
+            },
+            Provider {
+                name: "Anthropic".to_string(),
+                api_key: "sk-test2".to_string(),
+                base_url: "https://api.anthropic.com/v1".to_string(),
+                model: "claude-3".to_string(),
+                rate_delay: std::time::Duration::from_secs_f64(2.0),
+                client,
+                concurrency: 3,
+            },
+        ];
+
+        let result = select_provider(&providers, Some(1), None::<&String>);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name, "Anthropic");
+    }
+
+    #[test]
+    fn test_select_provider_by_index_invalid() {
+        use translator::Provider;
+        use reqwest::Client;
+
+        let client = Client::builder().no_proxy().build().unwrap();
+        let providers = vec![Provider {
+            name: "OpenAI".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4".to_string(),
+            rate_delay: std::time::Duration::from_secs_f64(3.0),
+            client,
+            concurrency: 3,
+        }];
+
+        let result = select_provider(&providers, Some(999), None::<&String>);
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("索引"));
+        assert!(error_msg.contains("999"));
+        assert!(error_msg.contains("0-0"));
+    }
+
+    #[test]
+    fn test_select_provider_both_specified() {
+        use translator::Provider;
+        use reqwest::Client;
+
+        let client = Client::builder().no_proxy().build().unwrap();
+        let providers = vec![Provider {
+            name: "OpenAI".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4".to_string(),
+            rate_delay: std::time::Duration::from_secs_f64(3.0),
+            client,
+            concurrency: 3,
+        }];
+
+        let result = select_provider(&providers, Some(0), Some("OpenAI"));
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("不能同时使用"));
+    }
+
+    #[test]
+    fn test_select_provider_none_specified() {
+        use translator::Provider;
+        use reqwest::Client;
+
+        let client = Client::builder().no_proxy().build().unwrap();
+        let providers = vec![
+            Provider {
+                name: "OpenAI".to_string(),
+                api_key: "sk-test".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                model: "gpt-4".to_string(),
+                rate_delay: std::time::Duration::from_secs_f64(3.0),
+                client: client.clone(),
+                concurrency: 3,
+            },
+            Provider {
+                name: "Anthropic".to_string(),
+                api_key: "sk-test2".to_string(),
+                base_url: "https://api.anthropic.com/v1".to_string(),
+                model: "claude-3".to_string(),
+                rate_delay: std::time::Duration::from_secs_f64(2.0),
+                client,
+                concurrency: 3,
+            },
+        ];
+
+        let result = select_provider(&providers, None, None::<&String>);
+        assert!(result.is_ok());
+        // Should return one of the providers (random selection)
+        let provider = result.unwrap();
+        assert!(provider.name == "OpenAI" || provider.name == "Anthropic");
+    }
+
+    #[test]
+    fn test_select_provider_empty_list() {
+        let result = select_provider(&[], None, None::<&String>);
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("没有可用的 Provider"));
+    }
 }
 
 #[tokio::main]
@@ -257,13 +643,26 @@ async fn main() -> Result<()> {
         return init_config(&args.config);
     }
 
-    // 加载配置 - 如果没有使用输入目录模式，则使用基本配置
-    let config = load_config(&args.config)?;
-
     // 验证 max_tokens 参数
     if let Some(0) = args.max_tokens {
         eprintln!("错误: --max-tokens 必须是正整数");
         std::process::exit(1);
+    }
+
+    // 初始加载配置（为了获取日志配置）
+    let mut config = load_config(&args.config)?;
+
+    // 如果有 CLI 覆盖参数，重新加载配置
+    if args.input.is_some() || args.output.is_some() || args.output_mode.is_some() || args.max_tokens.is_some() || args.max_chunk_size.is_some() || args.exclude_dir.is_some() {
+        let overrides = config::ConfigOverrides {
+            root_dir: args.input.clone().filter(|p| p.is_dir()),
+            output_dir: args.output.clone(),
+            output_mode: args.output_mode.clone(),
+            max_tokens: args.max_tokens,
+            max_chunk_size: args.max_chunk_size,
+            exclude_dir: args.exclude_dir.clone(),
+        };
+        config = config::load_config_with_overrides(&args.config, overrides)?;
     }
 
     // 初始化日志
@@ -272,10 +671,18 @@ async fn main() -> Result<()> {
     info!("配置文件加载成功: {}", args.config);
     info!("根目录: {:?}", config.root_dir);
     info!("输出目录: {:?}", config.output_dir);
-    info!("输出模式: {:?}", config.output_mode);
+    
+    let mode_str = match config.output_mode {
+        config::OutputMode::Overwrite => "Overwrite",
+        config::OutputMode::NewFolder => "NewFolder",
+    };
+    info!("输出模式: {}", mode_str);
+
+    // 如果用户明确指定了 provider，则跳过可用性检测
+    let skip_check = args.no_provider_check || args.provider.is_some() || args.provider_name.is_some();
 
     // 初始化 Providers
-    let providers = initialize_providers(&config, args.no_provider_check).await?;
+    let providers = initialize_providers(&config, skip_check).await?;
 
     // 初始化记录器
     let translated_file = if let Some(ref log_dir) = config.log_dir {
@@ -303,6 +710,8 @@ async fn main() -> Result<()> {
                 &providers,
                 &recorder,
                 args.force,
+                args.provider,
+                args.provider_name.as_ref(),
             )
             .await;
         } else {
@@ -314,32 +723,63 @@ async fn main() -> Result<()> {
     if let Some(input_path) = args.input {
         // 检查输入路径是文件还是目录
         if input_path.is_dir() {
-            let output_path = args.output.expect(
-                "Output path is required when input is specified for directory translation",
-            );
-            // 当输入是目录时，使用配置覆盖创建新配置并执行批量翻译
-            let overrides = config::ConfigOverrides {
-                root_dir: Some(input_path),
-                output_dir: Some(output_path),
-                output_mode: args.output_mode,
-                max_tokens: args.max_tokens,
-                exclude_dir: args.exclude_dir,
-            };
-
-            let config_with_overrides =
-                config::load_config_with_overrides(&args.config, overrides)?;
-
-            // 目录模式使用新的配置进行批量翻译
+            // 目录模式使用已经处理过覆盖的全局配置进行批量翻译
             return handle_batch_translation(
-                &config_with_overrides,
+                &config,
                 &providers,
                 &recorder,
                 args.force,
                 args.retry_failed,
+                args.provider,
+                args.provider_name.as_ref(),
             )
             .await;
         } else {
-            // 当输入是文件时，执行单文件翻译
+            // 当输入是文件时
+            // 智能检测：如果是 .txt 文件且未指定 --list，尝试自动检测是否为文件列表
+            let should_use_list_mode = if args.list {
+                true
+            } else if let Some(ext) = input_path.extension() {
+                 if ext == "txt" && input_path.exists() {
+                     // 检测是否为列表文件 (check 20 lines, 80% threshold)
+                     let is_list = files::is_file_list(&input_path, 20, 0.8).unwrap_or(false);
+                     if is_list {
+                         info!("检测到 .txt 文件包含文件路径/URL，自动启用列表模式: {:?}", input_path);
+                     }
+                     is_list
+                 } else {
+                     false
+                 }
+            } else {
+                false
+            };
+
+            if should_use_list_mode {
+                 let output_path = args.output.unwrap_or_else(|| {
+                     // 如果未指定输出目录，默认为 input_path 同级目录下的 output 文件夹
+                     // 或者报错？原逻辑 list 模式必须有 output
+                     // 这里为了兼容性，如果用户没传 output，我们最好报错或者给默认值
+                     // 原逻辑: expect("Output path is required when using list mode")
+                     // 我们这里如果自动检测到了，用户可能没传 output，这会导致 panic。
+                     // 最好是抛出友好错误。
+                     eprintln!("错误: 自动检测到列表模式，但未提供 --output 参数。请指定输出目录。");
+                     std::process::exit(1);
+                 });
+                 
+                 return handle_file_list_translation(
+                    input_path,
+                    output_path,
+                    &config,
+                    &providers,
+                    &recorder,
+                    args.force,
+                    args.provider,
+                    args.provider_name.as_ref(),
+                )
+                .await;
+            }
+
+            // 执行单文件翻译
             if let Some(output_path) = args.output {
                 // 如果提供了输出路径，则使用自定义路径处理
                 return handle_single_file_with_custom_paths(
@@ -349,11 +789,14 @@ async fn main() -> Result<()> {
                     &providers,
                     &recorder,
                     args.force,
+                    args.full_path,
+                    args.provider,
+                    args.provider_name.as_ref(),
                 )
                 .await;
             } else {
-                // 如果没有提供输出路径，则使用默认配置进行单文件翻译（类似以前的 positional 参数模式）
-                return handle_single_file(input_path, &config, &providers, &recorder, args.force)
+                // 如果没有提供输出路径，则使用默认配置进行单文件翻译
+                return handle_single_file(input_path, &config, &providers, &recorder, args.force, args.provider, args.provider_name.as_ref())
                     .await;
             }
         }
@@ -366,6 +809,8 @@ async fn main() -> Result<()> {
         &recorder,
         args.force,
         args.retry_failed,
+        args.provider,
+        args.provider_name.as_ref(),
     )
     .await
 }
@@ -396,6 +841,9 @@ exclude_dir = "node_modules,.git,_build"
 
 # 最大 token 数
 max_tokens = 8192
+
+# 大文件拆分阈值 (单位：字符)
+max_chunk_size = 4000
 
 # 系统提示词（支持多行，使用 """ 包裹）
 system_prompt = """
@@ -542,12 +990,61 @@ impl tracing_subscriber::fmt::time::FormatTime for CustomTimeFormatter {
     }
 }
 
+/// 验证并选择 Provider
+fn select_provider(
+    providers: &[Provider],
+    provider_index: Option<usize>,
+    provider_name: Option<impl AsRef<str>>,
+) -> Result<Provider> {
+    // 检查是否同时指定了两种选择方式（虽然 clap 会阻止，但防御性编程）
+    if provider_index.is_some() && provider_name.is_some() {
+        anyhow::bail!("不能同时使用 --provider 和 --provider-name 参数");
+    }
+
+    // 按名称选择
+    if let Some(name) = provider_name {
+        let name_str = name.as_ref();
+        return providers
+            .iter()
+            .find(|p| p.name == name_str)
+            .cloned()
+            .ok_or_else(|| {
+                let available_names: Vec<&str> = providers.iter().map(|p| p.name.as_str()).collect();
+                anyhow!(
+                    "未找到名为 '{}' 的 Provider。可用的 Providers: {}",
+                    name_str,
+                    available_names.join(", ")
+                )
+            });
+    }
+
+    // 按索引选择
+    if let Some(index) = provider_index {
+        return providers
+            .get(index)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!(
+                    "Provider 索引 {} 超出范围。有效索引范围: 0-{}",
+                    index,
+                    providers.len().saturating_sub(1)
+                )
+            });
+    }
+
+    // 默认：随机选择一个（保持向后兼容）
+    providers
+        .choose(&mut rand::rng())
+        .cloned()
+        .ok_or_else(|| anyhow!("没有可用的 Provider"))
+}
+
 /// 初始化 Providers
 async fn initialize_providers(config: &Config, skip_check: bool) -> Result<Vec<Provider>> {
     let mut providers = Vec::new();
 
     if skip_check {
-        println!("跳过 API Provider 检查...");
+        println!("跳过 API Provider 检查（已指定 Provider 或 --no-provider-check）...");
         for provider_config in &config.providers {
             providers.push(Provider::from_config(provider_config));
         }
@@ -583,6 +1080,8 @@ async fn handle_single_file(
     providers: &[Provider],
     recorder: &Arc<TranslationRecorder>,
     force: bool,
+    provider_index: Option<usize>,
+    provider_name: Option<&String>,
 ) -> Result<()> {
     if providers.is_empty() {
         anyhow::bail!("没有可用的 Provider");
@@ -606,21 +1105,18 @@ async fn handle_single_file(
         anyhow::bail!("根目录 {:?} 不存在，请先创建此目录", config.root_dir);
     }
 
-    // 随机选择一个 Provider
-    let provider = providers
-        .choose(&mut rand::rng())
-        .ok_or_else(|| anyhow!("无法选择 Provider"))?;
-
-    println!("使用 Provider: {}", provider.name);
+    // 使用 select_provider 选择 Provider（支持索引或名称）
+    let provider = select_provider(providers, provider_index, provider_name.as_ref())?;
 
     match translate_file(
         &file_path,
         &config.root_dir,
         &config.output_dir,
         config.output_mode,
-        provider,
+        &provider,
         &config.system_prompt,
         config.max_tokens,
+        config.max_chunk_size,
         recorder,
         force,
     )
@@ -646,13 +1142,16 @@ async fn handle_single_file_with_custom_paths(
     providers: &[Provider],
     recorder: &Arc<TranslationRecorder>,
     force: bool,
+    full_path: bool,
+    provider_index: Option<usize>,
+    provider_name: Option<&String>,
 ) -> Result<()> {
     if providers.is_empty() {
         anyhow::bail!("没有可用的 Provider");
     }
 
     let input_path_str = input_path.to_string_lossy();
-    println!("翻译单个文件: {} -> {:?}", input_path_str, output_path);
+    println!("翻译单个文件: {}", input_path_str);
 
     // Check if input is a URL before checking if it's a local file
     if is_valid_url(&input_path_str) {
@@ -664,6 +1163,8 @@ async fn handle_single_file_with_custom_paths(
             providers,
             recorder,
             force,
+            provider_index,
+            provider_name,
         )
         .await;
     }
@@ -675,14 +1176,28 @@ async fn handle_single_file_with_custom_paths(
 
     // 检查输出路径是否为目录还是文件
     let output_file_path = if output_path.extension().is_none() && !output_path.is_file() {
-        // 输出路径没有扩展名，视为目录，使用输入文件名
-        output_path.join(
-            input_path
-                .file_name()
-                .ok_or_else(|| anyhow!("输入文件名无效: {:?}", input_path))?,
-        )
+        // 输出路径没有扩展名，视为目录
+        if full_path {
+            // --full-path 模式：保留完整的相对路径结构
+            // 将输入路径转换为相对于当前目录的路径
+            let input_relative_path = input_path
+                .strip_prefix(std::env::current_dir()?)
+                .unwrap_or_else(|_| {
+                    // 如果无法获取相对路径，使用原始路径
+                    input_path.as_path()
+                });
+
+            output_path.join(input_relative_path)
+        } else {
+            // 默认模式：只使用文件名
+            output_path.join(
+                input_path
+                    .file_name()
+                    .ok_or_else(|| anyhow!("输入文件名无效: {:?}", input_path))?,
+            )
+        }
     } else {
-        // 输出路径为文件，直接使用
+        // 输出路径为文件，直接使用（忽略 --full-path）
         output_path
     };
 
@@ -692,11 +1207,8 @@ async fn handle_single_file_with_custom_paths(
             .with_context(|| format!("无法创建输出目录: {:?}", output_dir))?;
     }
 
-    // 随机选择一个 Provider
-    let provider = providers
-        .choose(&mut rand::rng())
-        .ok_or_else(|| anyhow!("无法选择 Provider"))?;
-
+    // 使用 select_provider 选择 Provider（支持索引或名称）
+    let provider = select_provider(providers, provider_index, provider_name.as_ref())?;
     println!("使用 Provider: {}", provider.name);
 
     // Create a temporary file in the same directory structure to reuse the existing translation logic
@@ -722,6 +1234,7 @@ async fn handle_single_file_with_custom_paths(
         exclude_dirs: config.exclude_dirs.clone(),
         system_prompt: config.system_prompt.clone(),
         max_tokens: config.max_tokens,
+        max_chunk_size: config.max_chunk_size,
         log_dir: config.log_dir.clone(),
         log_file: config.log_file.clone(),
         log_level: config.log_level.clone(),
@@ -736,9 +1249,10 @@ async fn handle_single_file_with_custom_paths(
         &temp_config.root_dir,
         &temp_config.output_dir,
         temp_config.output_mode,
-        provider,
+        &provider,
         &temp_config.system_prompt,
         temp_config.max_tokens,
+        config.max_chunk_size,
         recorder,
         force,
     )
@@ -763,7 +1277,7 @@ async fn handle_single_file_with_custom_paths(
         } else {
             // Perform the translation using the provider
             let translated_content = provider
-                .translate(&content, &config.system_prompt, config.max_tokens)
+                .translate(&content, &config.system_prompt, config.max_tokens, config.max_chunk_size, &input_path_str)
                 .await
                 .with_context(|| format!("翻译失败: {:?}", input_path))?;
 
@@ -795,6 +1309,58 @@ fn read_file_list(file_path: &PathBuf) -> Result<Vec<String>> {
     Ok(files)
 }
 
+/// 获取当前激活的 Providers
+fn get_active_providers(
+    providers: &[Provider],
+    provider_index: Option<usize>,
+    provider_name: Option<impl AsRef<str>>,
+) -> Result<Vec<Provider>> {
+    // 检查是否同时指定了两种选择方式
+    if provider_index.is_some() && provider_name.is_some() {
+        anyhow::bail!("不能同时使用 --provider 和 --provider-name 参数");
+    }
+
+    // 按名称选择
+    if let Some(name) = provider_name {
+        let name_str = name.as_ref();
+        let p = providers
+            .iter()
+            .find(|p| p.name == name_str)
+            .cloned()
+            .ok_or_else(|| {
+                let available_names: Vec<&str> = providers.iter().map(|p| p.name.as_str()).collect();
+                anyhow!(
+                    "未找到名为 '{}' 的 Provider。可用的 Providers: {}",
+                    name_str,
+                    available_names.join(", ")
+                )
+            })?;
+        return Ok(vec![p]);
+    }
+
+    // 按索引选择
+    if let Some(index) = provider_index {
+        let p = providers
+            .get(index)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!(
+                    "Provider 索引 {} 超出范围。有效索引范围: 0-{}",
+                    index,
+                    providers.len().saturating_sub(1)
+                )
+            })?;
+        return Ok(vec![p]);
+    }
+
+    // 默认：返回所有可用的 Providers
+    if providers.is_empty() {
+        anyhow::bail!("没有可用的 Provider");
+    }
+
+    Ok(providers.to_vec())
+}
+
 /// Handle translation of files from a list
 async fn handle_file_list_translation(
     list_path: PathBuf,
@@ -803,6 +1369,8 @@ async fn handle_file_list_translation(
     providers: &[Provider],
     recorder: &Arc<TranslationRecorder>,
     force: bool,
+    provider_index: Option<usize>,
+    provider_name: Option<&String>,
 ) -> Result<()> {
     // Read the file list
     let file_paths = read_file_list(&list_path)?;
@@ -818,6 +1386,13 @@ async fn handle_file_list_translation(
     std::fs::create_dir_all(&output_dir)
         .with_context(|| format!("无法创建输出目录: {:?}", output_dir))?;
 
+    // 获取激活的 Providers
+    let active_providers = get_active_providers(providers, provider_index, provider_name)?;
+    println!("使用 {} 个 Provider 并发处理文件列表", active_providers.len());
+    for p in &active_providers {
+        println!("  - {} (并发: {})", p.name, p.concurrency);
+    }
+
     // Create a channel for sending file information to translation tasks
     let (tx, rx) = tokio::sync::mpsc::channel::<(String, PathBuf)>(1000); // (file_path_or_url, output_dir)
     let rx = Arc::new(Mutex::new(rx));
@@ -829,82 +1404,100 @@ async fn handle_file_list_translation(
     }
     drop(tx);
 
-    // Start translation tasks - similar to batch translation but for file list mode
+    // Start translation tasks
     let mut tasks = Vec::new();
 
-    // Create a copy of providers for each task to be able to select randomly
-    for provider in providers {
-        let provider = provider.clone();
-        let config = config.clone();
-        let recorder = recorder.clone();
-        let rx = rx.clone();
+    for provider in active_providers {
+        let provider = Arc::new(provider);
+        let concurrency = provider.concurrency.max(1);
 
-        let task = tokio::spawn(async move {
-            loop {
-                let (file_path_or_url, output_dir) = {
-                    let mut rx_guard = rx.lock().await;
-                    match rx_guard.recv().await {
-                        Some(data) => data,
-                        None => break, // No more files to process
-                    }
-                };
+        for _ in 0..concurrency {
+            let provider = Arc::clone(&provider);
+            let config = config.clone();
+            let recorder = recorder.clone();
+            let rx = Arc::clone(&rx);
 
-                println!("开始处理: {}", file_path_or_url);
+            let task = tokio::spawn(async move {
+                loop {
+                    let (file_path_or_url, output_dir) = {
+                        let mut rx_guard = rx.lock().await;
+                        match rx_guard.recv().await {
+                            Some(data) => data,
+                            None => break, // No more files to process
+                        }
+                    };
 
-                // Determine if this is a URL or local file path
-                if is_valid_url(&file_path_or_url) {
-                    // Handle remote URL - use this specific provider directly
-                    if let Err(e) = handle_remote_file_translation_with_provider(
-                        &file_path_or_url,
-                        &output_dir,
-                        &config,
-                        &provider,
-                        &recorder,
-                        force,
-                    )
-                    .await
-                    {
-                        error!(
-                            "[{}] 远程文件翻译失败 {}: {}",
-                            provider.name, file_path_or_url, e
-                        );
-                        println!(
-                            "❌ [{}] 远程文件翻译失败: {}",
-                            provider.name, file_path_or_url
-                        );
-                        let _ = recorder.record_failure(std::path::Path::new(&file_path_or_url));
-                    }
-                } else {
-                    // Handle local file
-                    let path = PathBuf::from(&file_path_or_url);
-                    if !path.exists() {
-                        error!("文件不存在: {}", file_path_or_url);
-                        let _ = recorder.record_failure(std::path::Path::new(&file_path_or_url));
-                        continue;
+                    // Determine if this is a URL or local file path
+                    if is_valid_url(&file_path_or_url) {
+                        // 检查 URL 是否已翻译
+                        if !force && recorder.is_translated(std::path::Path::new(&file_path_or_url)) {
+                            println!("[{}] 跳过 (已翻译): {}", provider.name, file_path_or_url);
+                            continue;
+                        }
+
+                        println!("开始处理 URL: {}", file_path_or_url);
+                        // Handle remote URL
+                        if let Err(e) = handle_remote_file_translation_with_provider(
+                            &file_path_or_url,
+                            &output_dir,
+                            &config,
+                            &provider,
+                            &recorder,
+                            force,
+                        )
+                        .await
+                        {
+                            error!(
+                                "[{}] 远程文件翻译失败 {}: {}",
+                                provider.name, file_path_or_url, e
+                            );
+                            println!(
+                                "❌ [{}] 远程文件翻译失败: {}",
+                                provider.name, file_path_or_url
+                            );
+                            let _ = recorder.record_failure(std::path::Path::new(&file_path_or_url));
+                        }
+                    } else {
+                        // Handle local file
+                        let path = PathBuf::from(&file_path_or_url);
+                        if !path.exists() {
+                            error!("文件不存在: {}", file_path_or_url);
+                            let _ = recorder.record_failure(std::path::Path::new(&file_path_or_url));
+                            continue;
+                        }
+                        
+                        // 显式检查是否已翻译（使用原始路径），修复 --list 模式下的去重问题
+                        if let Ok(abs_path) = std::fs::canonicalize(&path) {
+                            if !force && recorder.is_translated(&abs_path) {
+                                println!("[{}] 跳过 (已翻译): {:?}", provider.name, path);
+                                continue;
+                            }
+                        }
+
+                        println!("开始处理文件: {:?}", path);
+                        if let Err(e) = handle_local_file_translation_with_provider(
+                            &path,
+                            &output_dir,
+                            &config,
+                            &provider,
+                            &recorder,
+                            force,
+                        )
+                        .await
+                        {
+                            error!("[{}] 本地文件翻译失败 {:?}: {}", provider.name, path, e);
+                            println!("❌ [{}] 本地文件翻译失败: {:?}", provider.name, path);
+                            let _ = recorder.record_failure(&path);
+                        }
                     }
 
-                    if let Err(e) = handle_local_file_translation_with_provider(
-                        &path,
-                        &output_dir,
-                        &config,
-                        &provider,
-                        &recorder,
-                        force,
-                    )
-                    .await
-                    {
-                        error!("[{}] 本地文件翻译失败 {:?}: {}", provider.name, path, e);
-                        println!("❌ [{}] 本地文件翻译失败: {:?}", provider.name, path);
-                        let _ = recorder.record_failure(&path);
-                    }
+                    // Apply rate limiting for this provider
+                    sleep(provider.rate_delay).await;
                 }
+            });
 
-                // Apply rate limiting for this provider
-                sleep(provider.rate_delay).await;
-            }
-        });
-
-        tasks.push(task);
+            tasks.push(task);
+        }
     }
 
     // Wait for all translation tasks to complete
@@ -922,7 +1515,7 @@ async fn handle_remote_file_translation_with_provider(
     output_dir: &Path,
     config: &Config,
     provider: &Provider,
-    _recorder: &Arc<TranslationRecorder>,
+    recorder: &Arc<TranslationRecorder>,
     _force: bool,
 ) -> Result<()> {
     use reqwest;
@@ -966,7 +1559,7 @@ async fn handle_remote_file_translation_with_provider(
 
     // Translate the content
     let translated_content = provider
-        .translate(&content, &config.system_prompt, config.max_tokens)
+        .translate(&content, &config.system_prompt, config.max_tokens, config.max_chunk_size, url)
         .await
         .with_context(|| format!("翻译失败: {}", url))?;
 
@@ -975,6 +1568,7 @@ async fn handle_remote_file_translation_with_provider(
         .with_context(|| format!("无法写入翻译文件: {:?}", output_path))?;
 
     println!("✅ 翻译成功: {:?}", output_path);
+    recorder.record_success(std::path::Path::new(url))?;
     Ok(())
 }
 
@@ -1024,6 +1618,7 @@ async fn handle_local_file_translation_with_provider(
         exclude_dirs: config.exclude_dirs.clone(),
         system_prompt: config.system_prompt.clone(),
         max_tokens: config.max_tokens,
+        max_chunk_size: config.max_chunk_size,
         log_dir: config.log_dir.clone(),
         log_file: config.log_file.clone(),
         log_level: config.log_level.clone(),
@@ -1041,6 +1636,7 @@ async fn handle_local_file_translation_with_provider(
         provider,
         &temp_config.system_prompt,
         temp_config.max_tokens,
+        config.max_chunk_size,
         recorder,
         force,
     )
@@ -1062,7 +1658,7 @@ async fn handle_local_file_translation_with_provider(
                 .with_context(|| format!("无法写入输出文件: {:?}", final_output_path))?;
         } else {
             let translated_content = provider
-                .translate(&content, &config.system_prompt, config.max_tokens)
+                .translate(&content, &config.system_prompt, config.max_tokens, config.max_chunk_size, &file_path.to_string_lossy())
                 .await
                 .with_context(|| format!("翻译失败: {:?}", file_path))?;
 
@@ -1071,7 +1667,7 @@ async fn handle_local_file_translation_with_provider(
         }
     }
 
-    println!("✅ 翻译成功: {:?} -> {:?}", file_path, final_output_path);
+    println!("✅ 翻译成功: {:?}", file_path);
     Ok(())
 }
 
@@ -1081,8 +1677,10 @@ async fn handle_url_input_translation(
     output_path: PathBuf,
     config: &Config,
     providers: &[Provider],
-    _recorder: &Arc<TranslationRecorder>,
+    recorder: &Arc<TranslationRecorder>,
     force: bool,
+    provider_index: Option<usize>,
+    provider_name: Option<&String>,
 ) -> Result<()> {
     use reqwest;
 
@@ -1090,7 +1688,7 @@ async fn handle_url_input_translation(
         anyhow::bail!("没有可用的 Provider");
     }
 
-    println!("翻译远程文件: {} -> {:?}", url, output_path);
+    println!("翻译远程文件: {}", url);
 
     // Download the content from the URL
     let client = reqwest::Client::new();
@@ -1142,11 +1740,8 @@ async fn handle_url_input_translation(
             .with_context(|| format!("无法创建输出目录: {:?}", output_dir))?;
     }
 
-    // 随机选择一个 Provider
-    let provider = providers
-        .choose(&mut rand::rng())
-        .ok_or_else(|| anyhow!("无法选择 Provider"))?;
-
+    // 使用 select_provider 选择 Provider（支持索引或名称）
+    let provider = select_provider(providers, provider_index, provider_name.as_ref())?;
     println!("使用 Provider: {}", provider.name);
 
     // Check if the content is likely already Chinese
@@ -1154,15 +1749,16 @@ async fn handle_url_input_translation(
         println!("⚠️  文件可能已是中文，跳过翻译: {}", url);
         std::fs::write(&output_file_path, &content)
             .with_context(|| format!("无法写入输出文件: {:?}", output_file_path))?;
+        let _ = recorder.record_success(std::path::Path::new(url));
     } else {
         // Perform the translation using the provider
         let translated_content = match provider
-            .translate(&content, &config.system_prompt, config.max_tokens)
+            .translate(&content, &config.system_prompt, config.max_tokens, config.max_chunk_size, url)
             .await
         {
             Ok(content) => content,
             Err(e) => {
-                let _ = _recorder.record_failure(std::path::Path::new(url));
+                let _ = recorder.record_failure(std::path::Path::new(url));
                 return Err(e.context(format!("翻译失败: {}", url)));
             }
         };
@@ -1170,6 +1766,7 @@ async fn handle_url_input_translation(
         // Write the translated content to the output file
         std::fs::write(&output_file_path, &translated_content)
             .with_context(|| format!("无法写入输出文件: {:?}", output_file_path))?;
+        let _ = recorder.record_success(std::path::Path::new(url));
     }
 
     println!("✅ 翻译成功: {:?}", output_file_path);
@@ -1280,6 +1877,8 @@ async fn handle_batch_translation(
     recorder: &Arc<TranslationRecorder>,
     force: bool,
     retry_failed: bool,
+    provider_index: Option<usize>,
+    provider_name: Option<&String>,
 ) -> Result<()> {
     // 批量翻译模式下需要检查 root_dir 是否存在
     if !config.root_dir.exists() {
@@ -1326,50 +1925,63 @@ async fn handle_batch_translation(
     }
     drop(tx);
 
+    // 获取激活的 Providers
+    let active_providers = get_active_providers(providers, provider_index, provider_name)?;
+    println!("使用 {} 个 Provider 并发处理批量翻译", active_providers.len());
+    for p in &active_providers {
+        println!("  - {} (并发: {})", p.name, p.concurrency);
+    }
+
     // 启动翻译任务
     let mut tasks = Vec::new();
 
-    for provider in providers {
-        let provider = provider.clone();
-        let config = config.clone();
-        let recorder = recorder.clone();
-        let rx = rx.clone();
+    for provider in active_providers {
+        let provider = Arc::new(provider);
+        let concurrency = provider.concurrency.max(1);
 
-        let task = tokio::spawn(async move {
-            loop {
-                let file_path = {
-                    let mut rx_guard = rx.lock().await;
-                    match rx_guard.recv().await {
-                        Some(path) => path,
-                        None => break,
+        for _ in 0..concurrency {
+            let provider = Arc::clone(&provider);
+            let config = config.clone();
+            let recorder = recorder.clone();
+            let rx = Arc::clone(&rx);
+
+            let task = tokio::spawn(async move {
+                loop {
+                    let file_path = {
+                        let mut rx_guard = rx.lock().await;
+                        match rx_guard.recv().await {
+                            Some(path) => path,
+                            None => break,
+                        }
+                    };
+
+                    let result = translate_file(
+                        &file_path,
+                        &config.root_dir,
+                        &config.output_dir,
+                        config.output_mode,
+                        &provider,
+                        &config.system_prompt,
+                        config.max_tokens,
+                        config.max_chunk_size,
+                        &recorder,
+                        force,
+                    )
+                    .await;
+
+                    if let Err(e) = result {
+                        error!("[{}] 翻译失败 {:?}: {}", provider.name, file_path, e);
+                        println!("❌ [{}] 翻译失败: {:?}", provider.name, file_path);
+                        let _ = recorder.record_failure(&file_path);
                     }
-                };
 
-                let result = translate_file(
-                    &file_path,
-                    &config.root_dir,
-                    &config.output_dir,
-                    config.output_mode,
-                    &provider,
-                    &config.system_prompt,
-                    config.max_tokens,
-                    &recorder,
-                    force,
-                )
-                .await;
-
-                if let Err(e) = result {
-                    error!("[{}] 翻译失败 {:?}: {}", provider.name, file_path, e);
-                    println!("❌ [{}] 翻译失败: {:?}", provider.name, file_path);
-                    let _ = recorder.record_failure(&file_path);
+                    // 速率限制
+                    sleep(provider.rate_delay).await;
                 }
+            });
 
-                // 速率限制
-                sleep(provider.rate_delay).await;
-            }
-        });
-
-        tasks.push(task);
+            tasks.push(task);
+        }
     }
 
     // 等待所有任务完成

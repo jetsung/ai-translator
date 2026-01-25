@@ -10,6 +10,7 @@ pub struct ConfigOverrides {
     pub output_dir: Option<PathBuf>,
     pub output_mode: Option<String>,
     pub max_tokens: Option<usize>,
+    pub max_chunk_size: Option<usize>,
     pub exclude_dir: Option<String>,
 }
 
@@ -27,9 +28,6 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = r#"
 7. 只输出翻译后的完整 Markdown 内容，不要添加任何说明、注释或多余文本。
 8. 绝对禁止修改任何源文件路径或名称，包括但不限于图片（img, svg）、链接等，保持原样。
 "#;
-
-/// 需要保留的字段（不翻译）
-pub const PRESERVE_FIELDS: &[&str] = &["tags", "keywords", "aliases"];
 
 /// Provider 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +83,8 @@ pub struct TomlConfig {
     pub system_prompt: Option<String>,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: usize,
+    #[serde(default = "default_max_chunk_size")]
+    pub max_chunk_size: usize,
     #[serde(default = "default_log_dir")]
     pub log_dir: Option<String>,
     #[serde(default = "default_log_file")]
@@ -97,6 +97,10 @@ pub struct TomlConfig {
 
 fn default_max_tokens() -> usize {
     8192
+}
+
+fn default_max_chunk_size() -> usize {
+    4000
 }
 
 fn default_log_file() -> String {
@@ -128,6 +132,7 @@ pub struct Config {
     pub exclude_dirs: Vec<String>,
     pub system_prompt: String,
     pub max_tokens: usize,
+    pub max_chunk_size: usize,
     pub log_dir: Option<PathBuf>,
     pub log_file: PathBuf,
     pub log_level: String,
@@ -265,6 +270,7 @@ pub fn load_config_with_overrides(config_path: &str, overrides: ConfigOverrides)
     };
 
     let max_tokens = overrides.max_tokens.unwrap_or(toml_config.max_tokens);
+    let max_chunk_size = overrides.max_chunk_size.unwrap_or(toml_config.max_chunk_size);
 
     Ok(Config {
         root_dir,
@@ -273,6 +279,7 @@ pub fn load_config_with_overrides(config_path: &str, overrides: ConfigOverrides)
         exclude_dirs,
         system_prompt,
         max_tokens,
+        max_chunk_size,
         log_dir,
         log_file,
         log_level,
@@ -296,14 +303,6 @@ mod tests {
         assert_eq!(OutputMode::from_str("New_Folder"), OutputMode::NewFolder);
         // Default case
         assert_eq!(OutputMode::from_str("invalid"), OutputMode::NewFolder);
-    }
-
-    #[test]
-    fn test_preserve_fields() {
-        assert!(PRESERVE_FIELDS.contains(&"tags"));
-        assert!(PRESERVE_FIELDS.contains(&"keywords"));
-        assert!(PRESERVE_FIELDS.contains(&"aliases"));
-        assert_eq!(PRESERVE_FIELDS.len(), 3);
     }
 
     #[test]
@@ -584,6 +583,7 @@ mod tests {
             output_dir: Some(PathBuf::from("./override_output")),
             output_mode: Some("overwrite".to_string()),
             max_tokens: Some(2048),
+            max_chunk_size: None,
             exclude_dir: Some("temp,build".to_string()),
         };
 
@@ -631,6 +631,7 @@ mod tests {
             output_dir: None,
             output_mode: Some("overwrite".to_string()),
             max_tokens: None,
+            max_chunk_size: None,
             exclude_dir: None,
         };
 
@@ -677,6 +678,7 @@ mod tests {
             output_dir: None,
             output_mode: None,
             max_tokens: None,
+            max_chunk_size: None,
             exclude_dir: None,
         };
 

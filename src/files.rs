@@ -65,6 +65,52 @@ pub fn is_supported_format(file_path: &Path) -> bool {
     get_file_format(file_path).is_some()
 }
 
+/// 检测文件是否看起来像文件列表
+/// 规则：读取前 n 行，如果超过 threshold 比例的非空行是 URL 或存在的本地文件，则认为是列表
+pub fn is_file_list(file_path: &Path, check_lines: usize, threshold: f64) -> Result<bool, std::io::Error> {
+    let file = std::fs::File::open(file_path)?;
+    let reader = std::io::BufReader::new(file);
+    use std::io::BufRead;
+    
+    let mut total_lines = 0;
+    let mut valid_paths = 0;
+    
+    // 获取文件所在的目录，用于检查相对路径
+    let base_dir = file_path.parent();
+    
+    for line in reader.lines().take(check_lines) {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        
+        total_lines += 1;
+        
+        // 简单的 URL 检查
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            valid_paths += 1;
+        } else {
+            // 检查是否为存在的路径
+            let path = Path::new(trimmed);
+            if path.exists() {
+                valid_paths += 1;
+            } else if let Some(base) = base_dir {
+                // 尝试检查相对于文件所在目录的路径
+                if base.join(path).exists() {
+                    valid_paths += 1;
+                }
+            }
+        }
+    }
+    
+    if total_lines == 0 {
+        return Ok(false);
+    }
+    
+    Ok((valid_paths as f64 / total_lines as f64) > threshold)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,5 +201,25 @@ mod tests {
         assert!(files.contains(&normal_file));
         assert!(!files.contains(&excluded_file));
         assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn test_is_file_list() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let root = temp_dir.path();
+        
+        let target_file = root.join("target.md");
+        fs::write(&target_file, "content").unwrap();
+        
+        let list_file = root.join("list.txt");
+        // 使用相对路径编写内容
+        fs::write(&list_file, "target.md\nhttps://google.com").unwrap();
+        
+        // 应该能识别，因为 target.md 相对于 list.txt 是存在的
+        assert!(is_file_list(&list_file, 5, 0.8).unwrap());
+        
+        let normal_txt = root.join("normal.txt");
+        fs::write(&normal_txt, "This is just some regular text.\nNot a list at all.").unwrap();
+        assert!(!is_file_list(&normal_txt, 5, 0.8).unwrap());
     }
 }

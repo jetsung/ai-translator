@@ -15,6 +15,9 @@ exclude_dir = "node_modules,.git,_build"
 # 最大 token 数
 max_tokens = 8192
 
+# 大文件拆分阈值 (单位：字符)
+max_chunk_size = 4000
+
 # 系统提示词（支持多行，使用 """ 包裹）
 system_prompt = """
 你是一个专业的技术文档翻译专家。请将以下英文 Markdown 文档翻译成流畅、自然的简体中文。

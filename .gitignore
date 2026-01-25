@@ -41,6 +41,14 @@ target
 /docs
 /docs_zh
 
+# Translation artifacts
+translated_files.txt
+failed_translations.txt
+
+# examples
+/examples
+/outputs
+
 # Vibe Coding
 /openspec
 CLAUDE.md
