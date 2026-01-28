@@ -10,6 +10,7 @@
 - **🛡️ 列表保护机制**：在目录翻译时自动识别 `.txt` 列表文件并进行原样复制，防止误翻译导致的清单损坏。
 - **🌐 全场景支持**：完美支持本地单文件、目录递归、文本列表清单以及远程 URL 直接下载并翻译。
 - **🔄 断点续传与去重**：实时记录翻译状态，支持重试失败任务，智能检测内容是否已为中文以避免重复翻译。
+- **📋 文件格式过滤**：支持白名单和黑名单配置，精确控制需要翻译的文件类型。
 - **🛠️ 高度可定制**：灵活的配置文件支持，命令行参数可全覆盖。
 
 ## 📦 安装
@@ -63,6 +64,18 @@ aitr --list --input list.txt --output ./translated
 
 ## 🛠️ 高级用法
 
+### 文件格式过滤
+```bash
+# 只翻译 Markdown 文件
+aitr --input ./docs --whitelist-extensions md,mdx
+
+# 排除特定格式文件
+aitr --input ./docs --blacklist-extensions pdf,docx,log
+
+# 组合使用（白名单优先）
+aitr --input ./docs --whitelist-extensions md,txt --blacklist-extensions tmp
+```
+
 ### 覆盖拆分阈值
 针对极长文档，可以手动调整分块大小：
 ```bash
@@ -91,6 +104,10 @@ max_tokens = 8192
 max_chunk_size = 4000         # 大文件拆分字符阈值
 exclude_dir = ".git,node_modules"
 
+# 文件格式过滤
+whitelist_extensions = "md,txt,srt"  # 白名单（留空使用默认格式）
+blacklist_extensions = "pdf,docx"    # 黑名单（白名单优先）
+
 # Provider 配置 (支持多个)
 [[providers]]
 name = "OpenAI"
@@ -110,6 +127,8 @@ rate_delay = 1.0              # 请求间隔延迟 (秒)
 | `--input` | 输入路径（文件/目录/URL） |
 | `--output` | 输出路径 |
 | `--list` | 启用列表模式 |
+| `--whitelist-extensions` | 白名单文件扩展名（逗号分隔） |
+| `--blacklist-extensions` | 黑名单文件扩展名（逗号分隔） |
 | `--max-chunk-size` | 覆盖大文件拆分阈值 |
 | `--max-tokens` | 覆盖单次请求最大 Token |
 | `--provider-name` | 指定使用的 Provider 名称 |

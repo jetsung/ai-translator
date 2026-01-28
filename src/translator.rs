@@ -279,6 +279,9 @@ pub async fn translate_file(
         )
     })?;
 
+    // 创建用于记录的标识符（使用相对路径，这样在不同环境下更稳定）
+    let record_key = rel_path.to_string_lossy().to_string();
+
     // 在 NewFolder 模式下，智能路径映射处理
     let effective_rel_path = if output_mode == OutputMode::NewFolder {
         // 计算预期的保存路径
@@ -329,10 +332,11 @@ pub async fn translate_file(
     };
 
     debug!("相对路径: {:?}", rel_path);
+    debug!("记录键: {}", record_key);
     info!("[{}] 开始翻译: {:?}", provider.name, rel_path);
 
-    // 检查是否已翻译
-    if !force_translate && recorder.is_translated(&abs_path) {
+    // 检查是否已翻译（使用相对路径作为键）
+    if !force_translate && recorder.is_translated_by_key(&record_key) {
         info!("[{}] 跳过 (已翻译): {:?}", provider.name, rel_path);
         return Ok(());
     }
@@ -374,7 +378,7 @@ pub async fn translate_file(
                 fs::copy(&abs_path, &save_path)
                     .with_context(|| format!("无法复制文件: {:?} -> {:?}", abs_path, save_path))?;
                     
-                recorder.record_success(&abs_path)?;
+                recorder.record_success_by_key(&record_key)?;
                 return Ok(());
             }
         }
@@ -387,7 +391,7 @@ pub async fn translate_file(
     // 检查是否已经是中文
     if !force_translate && is_likely_chinese(&content) {
         info!("[{}] 跳过 (已是中文): {:?}", provider.name, rel_path);
-        recorder.record_success(&abs_path)?;
+        recorder.record_success_by_key(&record_key)?;
         return Ok(());
     }
 
@@ -455,11 +459,190 @@ pub async fn translate_file(
     fs::write(&save_path, &translated_text)
         .with_context(|| format!("无法写入文件: {:?}", save_path))?;
 
+    // 计算相对于输出目录的显示路径
+    let display_path = if output_mode == OutputMode::NewFolder {
+        // 显示相对于输出目录的路径
+        if let Some(rel_to_output) = pathdiff::diff_paths(&save_path, output_dir) {
+            output_dir.join(&rel_to_output)
+        } else {
+            save_path.clone()
+        }
+    } else {
+        save_path.clone()
+    };
+
     info!(
         "[{}] 翻译成功: {:?} -> {:?}",
-        provider.name, rel_path, save_path
+        provider.name, rel_path, display_path
     );
-    recorder.record_success(&abs_path)?;
+    recorder.record_success_by_key(&record_key)?;
+
+    Ok(())
+}
+
+/// 带自定义显示路径的翻译文件函数（用于列表模式）
+pub async fn translate_file_with_custom_display(
+    file_path: &Path,
+    root_dir: &Path,
+    output_dir: &Path,
+    output_mode: OutputMode,
+    provider: &Provider,
+    system_prompt: &str,
+    max_tokens: usize,
+    max_chunk_size: usize,
+    recorder: &TranslationRecorder,
+    force_translate: bool,
+    display_input_path: &Path,  // 用于显示的输入路径
+    display_output_path: &Path, // 用于显示的输出路径
+) -> Result<()> {
+    let abs_path = fs::canonicalize(file_path)
+        .with_context(|| format!("无法规范化文件路径: {:?}", file_path))?;
+
+    // 将 root_dir 转换为绝对路径，以便 pathdiff::diff_paths 正确工作
+    let abs_root_dir = if root_dir.is_absolute() {
+        root_dir.to_path_buf()
+    } else {
+        fs::canonicalize(root_dir)
+            .unwrap_or_else(|_| std::env::current_dir().unwrap().join(root_dir))
+    };
+
+    let rel_path = pathdiff::diff_paths(&abs_path, &abs_root_dir).ok_or_else(|| {
+        anyhow!(
+            "无法计算相对路径: abs_path={:?}, root_dir={:?}",
+            abs_path,
+            abs_root_dir
+        )
+    })?;
+
+    // 创建用于记录的标识符（使用显示路径的相对路径）
+    let record_key = display_input_path.to_string_lossy().to_string();
+
+    debug!("相对路径: {:?}", rel_path);
+    debug!("记录键: {}", record_key);
+    info!("[{}] 开始翻译: {:?}", provider.name, display_input_path);
+
+    // 检查是否已翻译（使用显示路径作为键）
+    if !force_translate && recorder.is_translated_by_key(&record_key) {
+        info!("[{}] 跳过 (已翻译): {:?}", provider.name, display_input_path);
+        return Ok(());
+    }
+
+    // 检查是否为 txt 文件且像是文件列表
+    if let Some(ext) = abs_path.extension() {
+        if ext == "txt" {
+            // Check first 5 lines with 80% threshold (4/5 lines must be paths)
+            if crate::files::is_file_list(&abs_path, 5, 0.8).unwrap_or(false) {
+                 info!("[{}] 跳过翻译 (检测到文件列表): {:?}", provider.name, display_input_path);
+                 
+                 // 确定保存路径
+                 let save_path = match output_mode {
+                    OutputMode::Overwrite => abs_path.clone(),
+                    OutputMode::NewFolder => {
+                        let rel_dir = rel_path.parent().unwrap_or(Path::new(""));
+                        let save_dir: PathBuf = if rel_dir.as_os_str().is_empty() {
+                            output_dir.to_path_buf()
+                        } else {
+                            output_dir.join(rel_dir)
+                        };
+                        // 只创建子目录
+                        if !save_dir.exists() {
+                            fs::create_dir_all(&save_dir)
+                                .with_context(|| format!("无法创建子目录: {:?}", save_dir))?;
+                        }
+                        save_dir.join(rel_path.file_name().unwrap())
+                    }
+                };
+                
+                // 直接复制文件
+                fs::copy(&abs_path, &save_path)
+                    .with_context(|| format!("无法复制文件: {:?} -> {:?}", abs_path, save_path))?;
+                    
+                recorder.record_success_by_key(&record_key)?;
+                return Ok(());
+            }
+        }
+    }
+
+    // 读取文件内容
+    let content =
+        fs::read_to_string(&abs_path).with_context(|| format!("无法读取文件: {:?}", abs_path))?;
+
+    // 检查是否已经是中文
+    if !force_translate && is_likely_chinese(&content) {
+        info!("[{}] 跳过 (已是中文): {:?}", provider.name, display_input_path);
+        recorder.record_success_by_key(&record_key)?;
+        return Ok(());
+    }
+
+    // 调用翻译 API，最多重试 3 次
+    let mut translated_text = None;
+    let file_identifier = display_input_path.to_string_lossy();
+    for retry in 0..3 {
+        match provider
+            .translate(&content, system_prompt, max_tokens, max_chunk_size, &file_identifier)
+            .await
+        {
+            Ok(text) => {
+                translated_text = Some(text);
+                break;
+            }
+            Err(e) => {
+                warn!(
+                    "[{}] 翻译失败 (重试 {}/3) {:?}: {}",
+                    provider.name,
+                    retry + 1,
+                    display_input_path,
+                    e
+                );
+                if retry < 2 {
+                    sleep(Duration::from_secs(5)).await;
+                }
+            }
+        }
+    }
+
+    let translated_text =
+        translated_text.ok_or_else(|| anyhow!("[{}] 翻译失败: {:?}", provider.name, display_input_path))?;
+
+    // 确定保存路径
+    let save_path = match output_mode {
+        OutputMode::Overwrite => abs_path.clone(),
+        OutputMode::NewFolder => {
+            // 检查输出目录是否存在
+            if !output_dir.exists() {
+                anyhow::bail!("输出目录 {:?} 不存在，请先创建此目录", output_dir);
+            }
+
+            // 检查 root_dir 是否存在
+            if !root_dir.exists() {
+                anyhow::bail!("根目录 {:?} 不存在，请先创建此目录", root_dir);
+            }
+
+            let rel_dir = rel_path.parent().unwrap_or(Path::new(""));
+            let save_dir: PathBuf = if rel_dir.as_os_str().is_empty() {
+                output_dir.to_path_buf()
+            } else {
+                output_dir.join(rel_dir)
+            };
+            // 只创建子目录，不创建 output_dir
+            if !save_dir.exists() {
+                fs::create_dir_all(&save_dir)
+                    .with_context(|| format!("无法创建子目录: {:?}", save_dir))?;
+            }
+            save_dir.join(rel_path.file_name().unwrap())
+        }
+    };
+
+    // 写入文件
+    debug!("保存路径: {:?}", save_path);
+    fs::write(&save_path, &translated_text)
+        .with_context(|| format!("无法写入文件: {:?}", save_path))?;
+
+    info!(
+        "[{}] 翻译成功: {:?} -> {:?}",
+        provider.name, display_input_path, display_output_path
+    );
+    recorder.record_success_by_key(&record_key)?;
 
     Ok(())
 }

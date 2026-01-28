@@ -12,6 +12,8 @@ pub struct ConfigOverrides {
     pub max_tokens: Option<usize>,
     pub max_chunk_size: Option<usize>,
     pub exclude_dir: Option<String>,
+    pub whitelist_extensions: Option<String>,
+    pub blacklist_extensions: Option<String>,
 }
 
 /// 默认系统提示词
@@ -80,6 +82,10 @@ pub struct TomlConfig {
     #[serde(default)]
     pub exclude_dir: String,
     #[serde(default)]
+    pub whitelist_extensions: Option<String>,
+    #[serde(default)]
+    pub blacklist_extensions: Option<String>,
+    #[serde(default)]
     pub system_prompt: Option<String>,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: usize,
@@ -130,6 +136,8 @@ pub struct Config {
     pub output_dir: PathBuf,
     pub output_mode: OutputMode,
     pub exclude_dirs: Vec<String>,
+    pub whitelist_extensions: Vec<String>,
+    pub blacklist_extensions: Vec<String>,
     pub system_prompt: String,
     pub max_tokens: usize,
     pub max_chunk_size: usize,
@@ -272,11 +280,45 @@ pub fn load_config_with_overrides(config_path: &str, overrides: ConfigOverrides)
     let max_tokens = overrides.max_tokens.unwrap_or(toml_config.max_tokens);
     let max_chunk_size = overrides.max_chunk_size.unwrap_or(toml_config.max_chunk_size);
 
+    let whitelist_extensions = if let Some(ref override_whitelist) = overrides.whitelist_extensions {
+        override_whitelist
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else if let Some(ref whitelist) = toml_config.whitelist_extensions {
+        whitelist
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let blacklist_extensions = if let Some(ref override_blacklist) = overrides.blacklist_extensions {
+        override_blacklist
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else if let Some(ref blacklist) = toml_config.blacklist_extensions {
+        blacklist
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     Ok(Config {
         root_dir,
         output_dir,
         output_mode,
         exclude_dirs,
+        whitelist_extensions,
+        blacklist_extensions,
         system_prompt,
         max_tokens,
         max_chunk_size,
@@ -585,6 +627,8 @@ mod tests {
             max_tokens: Some(2048),
             max_chunk_size: None,
             exclude_dir: Some("temp,build".to_string()),
+            whitelist_extensions: None,
+            blacklist_extensions: None,
         };
 
         let result = load_config_with_overrides(config_path.to_str().unwrap(), overrides);
@@ -633,6 +677,8 @@ mod tests {
             max_tokens: None,
             max_chunk_size: None,
             exclude_dir: None,
+            whitelist_extensions: None,
+            blacklist_extensions: None,
         };
 
         let result = load_config_with_overrides(config_path.to_str().unwrap(), overrides);
@@ -680,6 +726,8 @@ mod tests {
             max_tokens: None,
             max_chunk_size: None,
             exclude_dir: None,
+            whitelist_extensions: None,
+            blacklist_extensions: None,
         };
 
         let result = load_config_with_overrides(config_path.to_str().unwrap(), overrides);

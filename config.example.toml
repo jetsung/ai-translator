@@ -1,0 +1,68 @@
+# AI 翻译工具配置文件
+
+# 根目录 - 包含需要翻译的 Markdown 文件
+root_dir = "./docs"
+
+# 输出目录 - 翻译后的文件保存位置
+output_dir = "./docs_zh"
+
+# 输出模式: "overwrite" (覆盖原文件) 或 "new_folder" (保存到新文件夹)
+output_mode = "new_folder"
+
+# 排除的目录 (逗号分隔)
+exclude_dir = "node_modules,.git,_build"
+
+# 白名单文件扩展名 (逗号分隔，留空表示使用默认支持的格式)
+whitelist_extensions = "md,txt,srt"
+
+# 黑名单文件扩展名 (逗号分隔，留空表示不排除任何格式)
+# blacklist_extensions = "pdf,docx"
+
+# 最大 token 数
+max_tokens = 8192
+
+# 大文件拆分阈值 (单位：字符)
+max_chunk_size = 4000
+
+# 系统提示词（支持多行，使用 """ 包裹）
+system_prompt = """
+你是一个专业的技术文档翻译助手。请将以下内容翻译成简体中文，保持原有的 Markdown 格式和结构。
+
+要求：
+1. 保持技术术语的准确性
+2. 保留所有 Markdown 格式标记
+3. 保持代码块不变
+4. 确保翻译自然流畅
+"""
+
+# 日志配置
+[logging]
+# 日志等级 (debug, info, warn, error)
+level = "info"
+# 时间格式 (none (no timestamp), standard (local timezone format "%Y:%m:%d %H:%M:%S"), ISO-8601 (ISO 8601 format), RFC-3339 (RFC 3339 format))
+time_format = "standard"
+# 是否在终端界面显示日志
+console = true
+# 日志目录
+dir = "./logs"
+# 日志文件名
+file = "translation.log"
+
+# Provider 配置 (支持多个)
+[[providers]]
+name = "OpenAI"
+enabled = true
+api_key = "sk-your-openai-api-key-here"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4"
+concurrency = 3
+rate_delay = 1.0
+
+[[providers]]
+name = "DeepSeek"
+enabled = false
+api_key = "sk-your-deepseek-api-key-here"
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-chat"
+concurrency = 2
+rate_delay = 0.5

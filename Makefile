@@ -58,8 +58,20 @@ example-url:
 	@mkdir -p outputs
 	cargo run -- --input https://raw.githubusercontent.com/rust-lang/rust/master/README.md --output outputs/rust_readme_zh.md --config config.toml --force
 
+# 5. 白名单过滤示例 (只翻译 Markdown 文件)
+example-whitelist:
+	@rm -rf outputs
+	@mkdir -p outputs
+	cargo run -- --input examples --output outputs --whitelist-extensions md,txt --config config.toml --force
+
+# 6. 黑名单过滤示例 (排除日志文件)
+example-blacklist:
+	@rm -rf outputs
+	@mkdir -p outputs
+	cargo run -- --input examples --output outputs --blacklist-extensions log,tmp --config config.toml --force
+
 # 运行所有示例
-run-examples: example-dir example-list example-file example-url
+run-examples: example-dir example-list example-file example-url example-whitelist example-blacklist
 
 # 帮助信息
 help:
@@ -73,5 +85,7 @@ help:
 	@echo "  make example-list   - [示例] 列表模式翻译"
 	@echo "  make example-file   - [示例] 单文件翻译"
 	@echo "  make example-url    - [示例] 远程 URL 翻译"
+	@echo "  make example-whitelist - [示例] 白名单过滤翻译"
+	@echo "  make example-blacklist - [示例] 黑名单过滤翻译"
 	@echo "  make run-examples   - [示例] 顺序运行所有示例"
 	@echo "  make test-[module]  - 运行指定模块的测试 (如: make test-config)"

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};
 
 /// 收集所有需要翻译的文件（支持多种格式）
-pub fn collect_files(root_dir: &Path, exclude_dirs: &[String]) -> Result<Vec<PathBuf>> {
+pub fn collect_files(root_dir: &Path, exclude_dirs: &[String], whitelist_extensions: &[String], blacklist_extensions: &[String]) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
     let walkdir = WalkDir::new(root_dir).follow_links(false);
@@ -16,7 +16,7 @@ pub fn collect_files(root_dir: &Path, exclude_dirs: &[String]) -> Result<Vec<Pat
         };
 
         // Only process files, not directories
-        if entry.file_type().is_file() && is_supported_format(entry.path()) {
+        if entry.file_type().is_file() && is_supported_format(entry.path(), whitelist_extensions, blacklist_extensions) {
             files.push(entry.path().to_path_buf());
         }
     }
@@ -61,8 +61,28 @@ pub fn get_file_format(file_path: &Path) -> Option<String> {
 }
 
 /// 检查文件是否为支持的格式
-pub fn is_supported_format(file_path: &Path) -> bool {
-    get_file_format(file_path).is_some()
+pub fn is_supported_format(file_path: &Path, whitelist_extensions: &[String], blacklist_extensions: &[String]) -> bool {
+    if let Some(ext) = file_path.extension() {
+        let ext_lower = ext.to_string_lossy().to_lowercase();
+        
+        // 如果有白名单，只接受白名单中的扩展名（忽略黑名单）
+        if !whitelist_extensions.is_empty() {
+            return whitelist_extensions.contains(&ext_lower);
+        }
+        
+        // 如果在黑名单中，直接拒绝
+        if !blacklist_extensions.is_empty() && blacklist_extensions.contains(&ext_lower) {
+            return false;
+        }
+        
+        // 没有白名单时，使用默认支持的格式
+        match ext_lower.as_str() {
+            "md" | "mdx" | "txt" | "srt" => true,
+            _ => false,
+        }
+    } else {
+        false
+    }
 }
 
 /// 检测文件是否看起来像文件列表
@@ -141,12 +161,29 @@ mod tests {
 
     #[test]
     fn test_is_supported_format() {
-        assert!(is_supported_format(Path::new("test.md")));
-        assert!(is_supported_format(Path::new("test.mdx")));
-        assert!(is_supported_format(Path::new("test.txt")));
-        assert!(is_supported_format(Path::new("test.srt")));
-        assert!(!is_supported_format(Path::new("test.pdf")));
-        assert!(!is_supported_format(Path::new("test")));
+        // 测试默认支持的格式（无白名单/黑名单）
+        assert!(is_supported_format(Path::new("test.md"), &[], &[]));
+        assert!(is_supported_format(Path::new("test.mdx"), &[], &[]));
+        assert!(is_supported_format(Path::new("test.txt"), &[], &[]));
+        assert!(is_supported_format(Path::new("test.srt"), &[], &[]));
+        assert!(!is_supported_format(Path::new("test.pdf"), &[], &[]));
+        assert!(!is_supported_format(Path::new("test"), &[], &[]));
+        
+        // 测试白名单
+        let whitelist = vec!["md".to_string(), "txt".to_string()];
+        assert!(is_supported_format(Path::new("test.md"), &whitelist, &[]));
+        assert!(is_supported_format(Path::new("test.txt"), &whitelist, &[]));
+        assert!(!is_supported_format(Path::new("test.srt"), &whitelist, &[]));
+        
+        // 测试黑名单
+        let blacklist = vec!["txt".to_string()];
+        assert!(is_supported_format(Path::new("test.md"), &[], &blacklist));
+        assert!(!is_supported_format(Path::new("test.txt"), &[], &blacklist));
+        
+        // 测试白名单优先级（有白名单时忽略黑名单）
+        let whitelist = vec!["txt".to_string()];
+        let blacklist = vec!["txt".to_string()];
+        assert!(is_supported_format(Path::new("test.txt"), &whitelist, &blacklist));
     }
 
     #[test]
@@ -171,7 +208,7 @@ mod tests {
         fs::write(&sub_md_file, "# Nested test").unwrap();
 
         // Collect files
-        let files = collect_files(root_dir, &[]).unwrap();
+        let files = collect_files(root_dir, &[], &[], &[]).unwrap();
 
         assert!(files.contains(&md_file));
         assert!(files.contains(&txt_file));
@@ -196,7 +233,7 @@ mod tests {
         fs::write(&normal_file, "# Test").unwrap();
         fs::write(&excluded_file, "# Excluded").unwrap();
 
-        let files = collect_files(root_dir, &["node_modules".to_string()]).unwrap();
+        let files = collect_files(root_dir, &["node_modules".to_string()], &[], &[]).unwrap();
 
         assert!(files.contains(&normal_file));
         assert!(!files.contains(&excluded_file));

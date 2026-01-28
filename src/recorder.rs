@@ -86,10 +86,22 @@ impl TranslationRecorder {
             .unwrap_or(false)
     }
 
+    /// 通过键检查是否已翻译
+    pub fn is_translated_by_key(&self, key: &str) -> bool {
+        self.translated_set
+            .lock()
+            .map(|set| set.contains(key))
+            .unwrap_or(false)
+    }
+
     /// 记录翻译成功
     pub fn record_success(&self, abs_path: &Path) -> Result<()> {
         let path_str = abs_path.to_string_lossy().to_string();
+        self.record_success_by_key(&path_str)
+    }
 
+    /// 通过键记录翻译成功
+    pub fn record_success_by_key(&self, key: &str) -> Result<()> {
         // 添加到已翻译集合
         {
             let mut set = self
@@ -97,8 +109,8 @@ impl TranslationRecorder {
                 .lock()
                 .map_err(|e| anyhow::anyhow!("获取已翻译集合锁失败: {}", e))?;
 
-            if !set.contains(&path_str) {
-                set.insert(path_str.clone());
+            if !set.contains(key) {
+                set.insert(key.to_string());
 
                 // 写入文件
                 let mut writer = self
@@ -106,13 +118,13 @@ impl TranslationRecorder {
                     .lock()
                     .map_err(|e| anyhow::anyhow!("获取已翻译文件写入锁失败: {}", e))?;
 
-                writeln!(writer, "{}", path_str)
+                writeln!(writer, "{}", key)
                     .with_context(|| format!("写入已翻译文件失败: {:?}", self.translated_file))?;
             }
         }
 
         // 从失败集合中移除
-        self.remove_from_failed(&path_str)?;
+        self.remove_from_failed(key)?;
 
         Ok(())
     }

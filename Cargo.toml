@@ -1,6 +1,6 @@
 [package]
 name = "ai-translator"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 description = "基于 AI 的多语言文本翻译工具，支持自定义提示词"
@@ -16,7 +16,7 @@ name = "aitr"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { version = "1.48", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.9"
 reqwest = { version = "0.13.1", default-features = false, features = ["json", "native-tls-vendored", "gzip", "brotli", "deflate", "http2", "charset"] }
@@ -36,7 +36,7 @@ tempfile = "3.24"
 url = "2.5"
 
 [dev-dependencies]
-tempfile = "3.0"
+tempfile = "3.24"
 wiremock = "0.6.5"
 serde_json = "1.0"
 futures = "0.3"

@@ -7,6 +7,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use config::{load_config, Config};
 use files::collect_files;
+use translator::translate_file_with_custom_display;
 use rand::prelude::IndexedRandom;
 use recorder::TranslationRecorder;
 use std::fs;
@@ -69,6 +70,14 @@ struct Args {
     /// 覆盖排除的目录 (逗号分隔)
     #[arg(long)]
     exclude_dir: Option<String>,
+
+    /// 白名单文件扩展名 (逗号分隔，如: md,txt,srt)
+    #[arg(long)]
+    whitelist_extensions: Option<String>,
+
+    /// 黑名单文件扩展名 (逗号分隔，如: pdf,docx)
+    #[arg(long)]
+    blacklist_extensions: Option<String>,
 
     /// 在单文件翻译时保留完整路径结构（仅对 --input 指定的单个文件有效）
     #[arg(long)]
@@ -653,7 +662,7 @@ async fn main() -> Result<()> {
     let mut config = load_config(&args.config)?;
 
     // 如果有 CLI 覆盖参数，重新加载配置
-    if args.input.is_some() || args.output.is_some() || args.output_mode.is_some() || args.max_tokens.is_some() || args.max_chunk_size.is_some() || args.exclude_dir.is_some() {
+    if args.input.is_some() || args.output.is_some() || args.output_mode.is_some() || args.max_tokens.is_some() || args.max_chunk_size.is_some() || args.exclude_dir.is_some() || args.whitelist_extensions.is_some() || args.blacklist_extensions.is_some() {
         let overrides = config::ConfigOverrides {
             root_dir: args.input.clone().filter(|p| p.is_dir()),
             output_dir: args.output.clone(),
@@ -661,6 +670,8 @@ async fn main() -> Result<()> {
             max_tokens: args.max_tokens,
             max_chunk_size: args.max_chunk_size,
             exclude_dir: args.exclude_dir.clone(),
+            whitelist_extensions: args.whitelist_extensions.clone(),
+            blacklist_extensions: args.blacklist_extensions.clone(),
         };
         config = config::load_config_with_overrides(&args.config, overrides)?;
     }
@@ -838,6 +849,12 @@ output_mode = "new_folder"
 
 # 排除的目录 (逗号分隔)
 exclude_dir = "node_modules,.git,_build"
+
+# 白名单文件扩展名 (逗号分隔，留空表示使用默认支持的格式)
+# whitelist_extensions = "md,txt,srt"
+
+# 黑名单文件扩展名 (逗号分隔，留空表示不排除任何格式)
+# blacklist_extensions = "pdf,docx"
 
 # 最大 token 数
 max_tokens = 8192
@@ -1232,6 +1249,8 @@ async fn handle_single_file_with_custom_paths(
         output_dir: temp_output_dir.clone(),
         output_mode: config::OutputMode::NewFolder, // Use new folder mode to copy to output
         exclude_dirs: config.exclude_dirs.clone(),
+        whitelist_extensions: config.whitelist_extensions.clone(),
+        blacklist_extensions: config.blacklist_extensions.clone(),
         system_prompt: config.system_prompt.clone(),
         max_tokens: config.max_tokens,
         max_chunk_size: config.max_chunk_size,
@@ -1244,7 +1263,7 @@ async fn handle_single_file_with_custom_paths(
     };
 
     // Use the existing translate_file function to handle all the complex logic
-    translator::translate_file(
+    translate_file_with_custom_display(
         &temp_input_path,
         &temp_config.root_dir,
         &temp_config.output_dir,
@@ -1255,6 +1274,8 @@ async fn handle_single_file_with_custom_paths(
         config.max_chunk_size,
         recorder,
         force,
+        &input_path,      // 显示原始输入路径
+        &output_file_path, // 显示最终输出路径
     )
     .await?;
 
@@ -1287,7 +1308,7 @@ async fn handle_single_file_with_custom_paths(
         }
     }
 
-    println!("✅ 翻译成功: {:?}", output_file_path);
+    println!("✅ 翻译成功: {:?}", input_path);
     Ok(())
 }
 
@@ -1567,7 +1588,7 @@ async fn handle_remote_file_translation_with_provider(
     std::fs::write(&output_path, &translated_content)
         .with_context(|| format!("无法写入翻译文件: {:?}", output_path))?;
 
-    println!("✅ 翻译成功: {:?}", output_path);
+    println!("✅ 翻译成功: {}", url);
     recorder.record_success(std::path::Path::new(url))?;
     Ok(())
 }
@@ -1616,6 +1637,8 @@ async fn handle_local_file_translation_with_provider(
         output_dir: temp_output_dir.clone(),
         output_mode: config::OutputMode::NewFolder,
         exclude_dirs: config.exclude_dirs.clone(),
+        whitelist_extensions: config.whitelist_extensions.clone(),
+        blacklist_extensions: config.blacklist_extensions.clone(),
         system_prompt: config.system_prompt.clone(),
         max_tokens: config.max_tokens,
         max_chunk_size: config.max_chunk_size,
@@ -1627,8 +1650,8 @@ async fn handle_local_file_translation_with_provider(
         providers: config.providers.clone(),
     };
 
-    // Use the existing translate_file function
-    translator::translate_file(
+    // 创建一个自定义的翻译函数，用于正确显示最终路径
+    let result = translate_file_with_custom_display(
         &temp_input_path,
         &temp_config.root_dir,
         &temp_config.output_dir,
@@ -1639,14 +1662,21 @@ async fn handle_local_file_translation_with_provider(
         config.max_chunk_size,
         recorder,
         force,
-    )
-    .await?;
+        file_path, // 原始文件路径用于显示
+        &final_output_path, // 最终输出路径用于显示
+    ).await;
+
+    if let Err(e) = result {
+        return Err(e);
+    }
 
     // Copy the translated file to the final output location (preserving directory structure)
     let temp_output_file = temp_output_dir.join(filename);
     if temp_output_file.exists() {
         std::fs::copy(&temp_output_file, &final_output_path)
             .with_context(|| format!("无法复制翻译文件到最终位置: {:?}", final_output_path))?;
+        
+        println!("✅ 翻译成功: {:?}", file_path);
     } else {
         // If the above translation didn't create a file, translate directly
         let content = std::fs::read_to_string(file_path)
@@ -1769,7 +1799,7 @@ async fn handle_url_input_translation(
         let _ = recorder.record_success(std::path::Path::new(url));
     }
 
-    println!("✅ 翻译成功: {:?}", output_file_path);
+    println!("✅ 翻译成功: {}", url);
     Ok(())
 }
 
@@ -1896,11 +1926,35 @@ async fn handle_batch_translation(
         println!("重试模式: {} 个失败文件", failed.len());
         failed.into_iter().map(PathBuf::from).collect()
     } else {
-        let all_files = collect_files(&config.root_dir, &config.exclude_dirs)?;
+        let all_files = collect_files(&config.root_dir, &config.exclude_dirs, &config.whitelist_extensions, &config.blacklist_extensions)?;
         let all_files_count = all_files.len();
+        
+        // 将 root_dir 转换为绝对路径
+        let abs_root_dir = if config.root_dir.is_absolute() {
+            config.root_dir.clone()
+        } else {
+            std::fs::canonicalize(&config.root_dir)
+                .unwrap_or_else(|_| std::env::current_dir().unwrap().join(&config.root_dir))
+        };
+        
         let files: Vec<PathBuf> = all_files
             .into_iter()
-            .filter(|f| force || !recorder.is_translated(f))
+            .filter(|f| {
+                if force {
+                    return true;
+                }
+                
+                // 计算相对路径作为记录键
+                if let Ok(abs_path) = std::fs::canonicalize(f) {
+                    if let Some(rel_path) = pathdiff::diff_paths(&abs_path, &abs_root_dir) {
+                        let record_key = rel_path.to_string_lossy().to_string();
+                        return !recorder.is_translated_by_key(&record_key);
+                    }
+                }
+                
+                // 如果无法计算相对路径，回退到原始方法
+                !recorder.is_translated(f)
+            })
             .collect();
         println!(
             "找到 {} 个文件，需要翻译: {} 个",
@@ -1955,7 +2009,7 @@ async fn handle_batch_translation(
                         }
                     };
 
-                    let result = translate_file(
+                    let result = translator::translate_file(
                         &file_path,
                         &config.root_dir,
                         &config.output_dir,
