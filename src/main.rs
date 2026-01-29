@@ -1418,6 +1418,10 @@ async fn handle_file_list_translation(
     let (tx, rx) = tokio::sync::mpsc::channel::<(String, PathBuf)>(1000); // (file_path_or_url, output_dir)
     let rx = Arc::new(Mutex::new(rx));
 
+    // 创建进度计数器
+    let total_files = file_paths.len();
+    let completed_files = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     // Send file paths/URLs to the channel
     for file_path in file_paths {
         let output_dir_clone = output_dir.clone();
@@ -1437,6 +1441,7 @@ async fn handle_file_list_translation(
             let config = config.clone();
             let recorder = recorder.clone();
             let rx = Arc::clone(&rx);
+            let completed_files = Arc::clone(&completed_files);
 
             let task = tokio::spawn(async move {
                 loop {
@@ -1452,13 +1457,14 @@ async fn handle_file_list_translation(
                     if is_valid_url(&file_path_or_url) {
                         // 检查 URL 是否已翻译
                         if !force && recorder.is_translated(std::path::Path::new(&file_path_or_url)) {
-                            println!("[{}] 跳过 (已翻译): {}", provider.name, file_path_or_url);
+                            let completed = completed_files.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                            println!("[{}] 跳过 (已翻译): {} ({}/{})", provider.name, file_path_or_url, completed, total_files);
                             continue;
                         }
 
-                        println!("开始处理 URL: {}", file_path_or_url);
+                        println!("[{}] 开始处理 URL: {}", provider.name, file_path_or_url);
                         // Handle remote URL
-                        if let Err(e) = handle_remote_file_translation_with_provider(
+                        let result = handle_remote_file_translation_with_provider(
                             &file_path_or_url,
                             &output_dir,
                             &config,
@@ -1466,17 +1472,22 @@ async fn handle_file_list_translation(
                             &recorder,
                             force,
                         )
-                        .await
-                        {
+                        .await;
+                        
+                        let completed = completed_files.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        
+                        if let Err(e) = result {
                             error!(
                                 "[{}] 远程文件翻译失败 {}: {}",
                                 provider.name, file_path_or_url, e
                             );
                             println!(
-                                "❌ [{}] 远程文件翻译失败: {}",
-                                provider.name, file_path_or_url
+                                "❌ [{}] 远程文件翻译失败: {} ({}/{})",
+                                provider.name, file_path_or_url, completed, total_files
                             );
                             let _ = recorder.record_failure(std::path::Path::new(&file_path_or_url));
+                        } else {
+                            println!("✅ [{}] 远程文件翻译成功: {} ({}/{})", provider.name, file_path_or_url, completed, total_files);
                         }
                     } else {
                         // Handle local file
@@ -1484,19 +1495,22 @@ async fn handle_file_list_translation(
                         if !path.exists() {
                             error!("文件不存在: {}", file_path_or_url);
                             let _ = recorder.record_failure(std::path::Path::new(&file_path_or_url));
+                            let completed = completed_files.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                            println!("❌ 文件不存在: {} ({}/{})", file_path_or_url, completed, total_files);
                             continue;
                         }
                         
                         // 显式检查是否已翻译（使用原始路径），修复 --list 模式下的去重问题
                         if let Ok(abs_path) = std::fs::canonicalize(&path) {
                             if !force && recorder.is_translated(&abs_path) {
-                                println!("[{}] 跳过 (已翻译): {:?}", provider.name, path);
+                                let completed = completed_files.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                                println!("[{}] 跳过 (已翻译): {:?} ({}/{})", provider.name, path, completed, total_files);
                                 continue;
                             }
                         }
 
-                        println!("开始处理文件: {:?}", path);
-                        if let Err(e) = handle_local_file_translation_with_provider(
+                        println!("[{}] 开始处理文件: {:?}", provider.name, path);
+                        let result = handle_local_file_translation_with_provider(
                             &path,
                             &output_dir,
                             &config,
@@ -1504,11 +1518,16 @@ async fn handle_file_list_translation(
                             &recorder,
                             force,
                         )
-                        .await
-                        {
+                        .await;
+                        
+                        let completed = completed_files.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        
+                        if let Err(e) = result {
                             error!("[{}] 本地文件翻译失败 {:?}: {}", provider.name, path, e);
-                            println!("❌ [{}] 本地文件翻译失败: {:?}", provider.name, path);
+                            println!("❌ [{}] 本地文件翻译失败: {:?} ({}/{})", provider.name, path, completed, total_files);
                             let _ = recorder.record_failure(&path);
+                        } else {
+                            println!("✅ [{}] 本地文件翻译成功: {:?} ({}/{})", provider.name, path, completed, total_files);
                         }
                     }
 
@@ -1969,15 +1988,13 @@ async fn handle_batch_translation(
         return Ok(());
     }
 
-    // 创建任务队列
-    let (tx, rx) = tokio::sync::mpsc::channel::<PathBuf>(100);
+    // 创建任务队列（无界队列，避免阻塞）
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
     let rx = Arc::new(Mutex::new(rx));
 
-    // 发送文件到队列
-    for file in files_to_translate {
-        tx.send(file).await?;
-    }
-    drop(tx);
+    // 创建进度计数器
+    let total_files = files_to_translate.len();
+    let completed_files = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     // 获取激活的 Providers
     let active_providers = get_active_providers(providers, provider_index, provider_name)?;
@@ -1985,7 +2002,7 @@ async fn handle_batch_translation(
     for p in &active_providers {
         println!("  - {} (并发: {})", p.name, p.concurrency);
     }
-
+    
     // 启动翻译任务
     let mut tasks = Vec::new();
 
@@ -1998,7 +2015,8 @@ async fn handle_batch_translation(
             let config = config.clone();
             let recorder = recorder.clone();
             let rx = Arc::clone(&rx);
-
+            let completed_files = Arc::clone(&completed_files);
+            
             let task = tokio::spawn(async move {
                 loop {
                     let file_path = {
@@ -2009,6 +2027,8 @@ async fn handle_batch_translation(
                         }
                     };
 
+                    println!("[{}] 开始处理: {:?}", provider.name, file_path);
+                    
                     let result = translator::translate_file(
                         &file_path,
                         &config.root_dir,
@@ -2023,10 +2043,17 @@ async fn handle_batch_translation(
                     )
                     .await;
 
-                    if let Err(e) = result {
-                        error!("[{}] 翻译失败 {:?}: {}", provider.name, file_path, e);
-                        println!("❌ [{}] 翻译失败: {:?}", provider.name, file_path);
-                        let _ = recorder.record_failure(&file_path);
+                    let completed = completed_files.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    
+                    match result {
+                        Ok(_) => {
+                            println!("✅ [{}] 翻译成功: {:?} ({}/{})", provider.name, file_path, completed, total_files);
+                        }
+                        Err(e) => {
+                            error!("[{}] 翻译失败 {:?}: {}", provider.name, file_path, e);
+                            println!("❌ [{}] 翻译失败: {:?} ({}/{})", provider.name, file_path, completed, total_files);
+                            let _ = recorder.record_failure(&file_path);
+                        }
                     }
 
                     // 速率限制
@@ -2037,7 +2064,13 @@ async fn handle_batch_translation(
             tasks.push(task);
         }
     }
-
+    
+    // 发送文件到队列（现在消费者已经在运行了）
+    for file in files_to_translate {
+        tx.send(file)?;
+    }
+    drop(tx);
+    
     // 等待所有任务完成
     for task in tasks {
         task.await?;
